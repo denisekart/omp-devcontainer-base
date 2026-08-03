@@ -51,12 +51,12 @@ Profiles share project-level configuration (`.omp/`), but keep their own model h
 ### Build the Image
 From the root of this repository:
 ```bash
-docker build -t your-registry/omp-devcontainer-base:latest -f build/Dockerfile build/
+docker build -t ghcr.io/your-org/omp-devcontainer-base:latest -f build/Dockerfile build/
 ```
 
 ### Publish the Image
 ```bash
-docker push your-registry/omp-devcontainer-base:latest
+docker push ghcr.io/your-org/omp-devcontainer-base:latest
 ```
 
 ---
@@ -65,9 +65,21 @@ docker push your-registry/omp-devcontainer-base:latest
 
 To add `oh-my-pi` support to any repository:
 
-1. **Copy the Devcontainer Setup**:
-   Copy the `.devcontainer/` folder from this repo to your target repo.
-   
+1. **Add the Devcontainer Config**:
+   Create a `.devcontainer/devcontainer.json` in your target repository pointing to the pre-built image:
+   ```json
+   {
+     "name": "my-omp-project",
+     "image": "ghcr.io/your-org/omp-devcontainer-base:latest",
+     "mounts": [
+       "source=omp-home,target=/home/vscode/.omp,type=volume",
+       "source=hindsight-data,target=/home/vscode/.hindsight,type=volume"
+     ],
+     "postCreateCommand": "bash /usr/local/share/omp-scripts/bootstrap.sh"
+   }
+   ```
+   *(Note: The base image includes all necessary setup scripts and defaults. See [Persistence](#-persistence) for recommended volume mounts.)*
+
 2. **Open in Container**:
    Open your target repo in VS Code and run **Dev Containers: Reopen in Container**.
 
@@ -104,10 +116,12 @@ The base image seeds default configurations into your user home directory:
         baseUrl: "http://host.docker.internal:11434/v1"
         auth: none
         models:
-          qwen2.5-coder:7b:
-            id: "qwen2.5-coder:7b"
-          deepseek-r1:32b:
-            id: "deepseek-r1:32b"
+          qwen3-coder:7b:
+            id: "qwen3-coder:7b"
+          qwen3-coder:32b:
+            id: "qwen3-coder:32b"
+          deepseek-r1:70b:
+            id: "deepseek-r1:70b"
     ```
 -   **`~/.omp/agent/config.yml`**: Contains global role mappings and LSP settings.
 
@@ -127,12 +141,39 @@ The following roles are used by the `omp` harness:
 
 | Role | Purpose | Default Mapping |
 | :--- | :--- | :--- |
-| `default` | Primary model for interaction and chat. | `local/qwen2.5-coder:7b` |
-| `smol` | Fast model for background tasks (summaries, titles). | `local/qwen2.5-coder:7b` |
-| `slow` | Heavy reasoning model for complex architecture. | `local/deepseek-r1:32b` |
-| `plan` | Architect model used for creating work plans. | `local/deepseek-r1:32b` |
-| `task` | Model used for executing delegated sub-tasks. | `local/qwen2.5-coder:7b` |
-| `memory` | Model used for Hindsight context extraction. | `local/qwen2.5-coder:7b` |
+| `default` | Primary model for interaction and chat. | `local/qwen3-coder:32b` |
+| `smol` | Fast model for background tasks (summaries, titles). | `local/qwen3-coder:7b` |
+| `slow` | Heavy reasoning model for complex architecture. | `local/deepseek-r1:70b` |
+| `plan` | Architect model used for creating work plans. | `local/deepseek-r1:70b` |
+| `task` | Model used for executing delegated sub-tasks. | `local/qwen3-coder:32b` |
+| `memory` | Model used for Hindsight context extraction. | `local/qwen3-coder:7b` |
+
+### 4. Preferred Local Models (128GB GB10)
+
+For high-end local setups (e.g., NVIDIA GB10 with 128GB VRAM), we recommend the following 2026-era models for optimal performance and reasoning:
+
+| Role Type | Recommended Model | Quantization | VRAM Fit | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| **Heavy Reasoning** | `deepseek-r1:70b` | Q4_K_M | ~40 GB | Best for `plan` and `slow` roles. |
+| **General Coding** | `qwen3-coder:32b` | Q4_K_M | ~20 GB | Best for `default` and `task` roles. |
+| **Fast Utility** | `qwen3-coder:7b` | Q4_K_M | ~5 GB | Best for `smol` and `memory` roles. |
+
+### 5. Managing Parallelism
+
+Running multiple subagents concurrently can quickly exhaust VRAM. The base image is configured to balance high-concurrency with stability by default:
+
+- **Global Limit**: `globalConcurrencyLimit: 20` (Total simultaneous subagent sessions).
+- **Big Model Slots**: `parallel.concurrency: 4` (Recommended max for `slow`/`plan` models).
+- **Small Model Slots**: `16` (Remaining slots for `smol`/`task` models).
+
+To adjust these limits, edit `~/.omp/agent/config.yml`:
+
+```yaml
+subagents:
+  globalConcurrencyLimit: 20
+  parallel:
+    concurrency: 4
+```
 
 ---
 

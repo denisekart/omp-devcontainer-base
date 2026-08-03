@@ -55,12 +55,12 @@ plan:
 # Model Role Mapping
 # Assign models defined in models.yml to native omp roles.
 modelRoles:
-  default: "local/qwen2.5-coder:7b"
-  smol: "local/qwen2.5-coder:7b"
-  slow: "local/deepseek-r1:32b"
-  plan: "local/deepseek-r1:32b"
-  task: "local/qwen2.5-coder:7b"
-  memory: "local/qwen2.5-coder:7b" # Used for mnemopi extraction
+  default: "local/qwen3-coder:32b"
+  smol: "local/qwen3-coder:7b"
+  slow: "local/deepseek-r1:70b"
+  plan: "local/deepseek-r1:70b"
+  task: "local/qwen3-coder:32b"
+  memory: "local/qwen3-coder:7b" # Used for mnemopi extraction
 
 # Local Tiny-Model Providers (Task-specific)
 # Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/local-models.md
@@ -79,6 +79,15 @@ skills:
   customDirectories:
     - "~/.omp/agent/skills"
     - ".omp/skills"
+
+# Subagent Concurrency & Parallelism
+# Reference: https://pi.dev/packages/pi-subagents
+subagents:
+  globalConcurrencyLimit: 20    # Combined limit (4 big + 16 small sessions)
+  maxSubagentDepth: 2           # Prevent unbounded nesting
+  forceTopLevelAsync: true      # Background tasks by default
+  parallel:
+    concurrency: 4              # Max parallel slots for 'big' model tasks
 
 agents:
   customDirectories:
