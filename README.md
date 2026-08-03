@@ -1,186 +1,183 @@
 # omp-devcontainer-base
 
-A reusable devcontainer base image for the [oh-my-pi](https://omp.sh/) (`omp`/`pi`) AI coding harness. Bundles a full .NET 10/Aspire + SvelteKit + Python toolchain, a self-healing Hindsight memory server, 5 community plugins, and a workspace bootstrap script — all in one image that works with **any** repository you mount into it.
+A portable, workspace-independent devcontainer base image designed for the [oh-my-pi](https://github.com/can1357/oh-my-pi) (`omp`/`pi`) AI coding harness.
 
-## What This Is
+## 🚀 Overview
 
-This devcontainer is **workspace-independent**. The same image works across any project you clone and mount. Configuration lives at the user level (`~/.omp/`), persisted across rebuilds via named Docker volumes. Stack-specific tools (Aspire MCP, shadcn, Puppeteer) are activated only when you run the bootstrap script against a detected or declared stack.
+This repository provides a "Base Image Factory" for creating a consistent development environment across multiple projects. It bundles a full .NET 10/Aspire + SvelteKit + Python toolchain with a pre-configured `oh-my-pi` agent environment.
 
-Contrast with a per-project devcontainer: those bake project-specific dependencies into the image and break when you switch repos. This image doesn't.
+### Key Features
+- **Workspace Independence**: Use the same image for any repository.
+- **Baked-in Capabilities**: Agents and skills are baked into the image, reducing workspace pollution.
+- **Persistent State**: LLM settings, memory (Hindsight), and history are shared and persisted across all your projects via Docker volumes.
+- **Native omp Integration**: Fully leverages native `omp` features like `task` delegation, `recall`/`store` memory, and session continuation.
 
-## Quick Start
+---
 
-### Opening in VS Code
+## 🛠️ Internal Architecture
 
-1. Install the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension
-2. Clone this repo (or copy `.devcontainer/` into your own repo)
-3. Open the folder in VS Code → press `F1` → **Dev Containers: Reopen in Container**
+### 1. Build Context (`build/`)
+The `build/` directory is the source of truth for the image. It is isolated from the rest of the repository to keep the Docker build context lean.
+- **`Dockerfile`**: Sets up the OS, toolchains, and `oh-my-pi` environment.
+- **`library/omp-defaults/`**: Contains the default `config.yml`, `models.yml`, `agents/`, and `skills/`. These are "baked" into `/usr/local/share/omp-defaults/`.
+- **`scripts/`**: Setup and lifecycle scripts baked into `/usr/local/share/omp-scripts/`.
 
-### Opening via CLI
+### 2. First-Boot Seeding
+When the container starts for the first time, `seed-omp-home.sh` copies the baked-in defaults from `/usr/local/share/omp-defaults/` to the user's persistent volume at `~/.omp/`. 
+- This ensures you have a working configuration immediately.
+- Because `~/.omp` is a persistent volume, your customizations (like `models.yml`) survive container rebuilds.
 
+### 3. Workspace Bootstrapping
+`bootstrap.sh` runs automatically during the `postCreateCommand` to specialize the current workspace for `omp`. It creates:
+- `AGENTS.md`: The context file `omp` uses to understand your project.
+- `.omp/config.yml`: Project-level overrides (e.g., stack definitions).
+- `.omp/plans/`: Directory for agent-generated work plans.
+
+### 4. Named Profiles
+`oh-my-pi` supports named profiles to isolate user-level configuration (MCPs, skills, agents).
+- **Global Profile**: Uses `~/.omp/agent/`.
+- **Named Profile**: Uses `~/.omp/profiles/<name>/agent/`.
+
+Start a session with a profile:
 ```bash
-# Install the devcontainer CLI once: npm install -g @devcontainers/cli
-devcontainer up --workspace-folder .
-devcontainer exec --workspace-folder . -- zsh
+omp --profile work
+```
+Profiles share project-level configuration (`.omp/`), but keep their own model history, memory, and user-level tool settings.
+
+---
+
+## 🏗️ Building and Publishing
+
+### Build the Image
+From the root of this repository:
+```bash
+docker build -t your-registry/omp-devcontainer-base:latest -f build/Dockerfile build/
 ```
 
-### Adding to an existing repo
-
-Copy `.devcontainer/` into your repo root, then open in VS Code. Volume names use the `omp-devcontainer-base-` prefix and are shared across all repos using this base image — your auth, history, and omp config survive across projects.
-
-## Bootstrapping a Workspace
-
-After the container starts, run `bootstrap.sh` to configure omp for your project:
-
-### Existing repository
-
+### Publish the Image
 ```bash
-bash scripts/bootstrap.sh existing-repo
-# or with an explicit stack preset:
-bash scripts/bootstrap.sh existing-repo --stack dotnet-aspire-svelte
+docker push your-registry/omp-devcontainer-base:latest
 ```
 
-Creates: `.omp/config.yml`, `.omp/mcp.json`, `.omo/drafts/`, `.omo/plans/`, `AGENTS.md` (omp context file), and copies profile skills to `.omp/skills/`. **Never** creates `src/`, `tests/`, or `docs/` — those are your project's concern.
+---
 
-Supported presets: `dotnet-aspire-svelte` | `dotnet-only` | `svelte-only` | `generic`
+## 📦 Integrating into Your Project
 
-### New project
+To add `oh-my-pi` support to any repository:
 
-```bash
-bash scripts/bootstrap.sh new-project --stack dotnet-aspire-svelte
-```
+1. **Copy the Devcontainer Setup**:
+   Copy the `.devcontainer/` folder from this repo to your target repo.
+   
+2. **Open in Container**:
+   Open your target repo in VS Code and run **Dev Containers: Reopen in Container**.
 
-Same as existing-repo, **plus** scaffolds the folder skeleton:
+3. **Initialize the Workspace**:
+   Bootstrapping is performed automatically on container creation. If you need to re-run it (e.g., to change the stack preset), you can run:
+   ```bash
+   bash /usr/local/share/omp-scripts/bootstrap.sh --stack <preset>
+   ```
 
-| Preset | Scaffolded paths |
-|--------|-----------------|
-| `dotnet-aspire-svelte` | `src/App.AppHost/`, `src/App.Web/`, `src/App.ServiceDefaults/`, `tests/App.Tests.Unit/`, `tests/App.Tests.E2E/`, `src/frontend/`, `docs/` |
-| `dotnet-only` | `src/App.AppHost/`, `src/App.Web/`, `src/App.ServiceDefaults/`, `tests/App.Tests.Unit/`, `docs/` |
-| `svelte-only` | `src/`, `tests/`, `docs/` |
-| `generic` | `src/`, `tests/`, `docs/` |
+4. **Configure your Models**:
+   Edit `~/.omp/agent/models.yml` to define your LLM endpoints and `~/.omp/agent/config.yml` to map them to roles. See [Model Configuration](#-model-configuration--roles) below.
 
-## Connecting Local LLM Endpoints
+5. **Start Coding**:
+   Run `omp` to start your first session.
 
-Two local model endpoints are pre-configured as placeholders. Edit the 3 `__FILL_*__` values per alias — no other files change:
+---
+
+## 🧠 Model Configuration & Roles
+
+`oh-my-pi` uses a two-tier configuration system to manage LLMs:
+
+1.  **Definitions (`models.yml`)**: Defines *where* the models are (endpoints, API keys, APIs).
+2.  **Mappings (`config.yml`)**: Assigns those defined models to specific **roles** (capabilities) used by the agent.
+
+### 1. Global Configuration (User Level)
+
+The base image seeds default configurations into your user home directory:
+
+-   **`~/.omp/agent/models.yml`**: Contains provider definitions. By default, it uses local models via Ollama.
+    ```yaml
+    providers:
+      local:
+        api: openai-completions
+        baseUrl: "http://host.docker.internal:11434/v1"
+        auth: none
+        models:
+          qwen2.5-coder:7b:
+            id: "qwen2.5-coder:7b"
+          deepseek-r1:32b:
+            id: "deepseek-r1:32b"
+    ```
+-   **`~/.omp/agent/config.yml`**: Contains global role mappings and LSP settings.
+
+### 2. Project Overrides
+
+You can specialize model selection for a specific project by editing `.omp/config.yml` in your project root. Overrides at the project level take precedence over global settings.
 
 ```yaml
-# Live file inside container: ~/.omp/agent/models.yml
-# Source template: image/omp-defaults/agent/models.yml
-
-models:
-  nemotron-super-120b:
-    baseUrl: "http://host.docker.internal:__FILL_NEMOTRON_PORT__/v1"
-    apiKey:  "__FILL_API_KEY_OR_NONE__"
-    model:   "__FILL_NEMOTRON_MODEL_ID__"
-    concurrency: 4          # runs 4 parallel jobs
-
-  qwen-4b-instruct:
-    baseUrl: "http://host.docker.internal:__FILL_QWEN_PORT__/v1"
-    apiKey:  "__FILL_API_KEY_OR_NONE__"
-    model:   "__FILL_QWEN_MODEL_ID__"
-    concurrency: 16         # runs 16 parallel jobs
+# .omp/config.yml
+modelRoles:
+  plan: "openai/gpt-4o" # Use a cloud model for planning in this specific project
 ```
 
-**Swap procedure** (takes ~30 seconds):
-1. Open `~/.omp/agent/models.yml` inside the container
-2. Replace all 6 `__FILL_*__` placeholders (3 per alias × 2 aliases)
-3. Restart omp — changes take effect immediately
+### 3. Native Model Roles
 
-`host.docker.internal` resolves to your host machine from inside the container.
+The following roles are used by the `omp` harness:
 
-## Running omp
+| Role | Purpose | Default Mapping |
+| :--- | :--- | :--- |
+| `default` | Primary model for interaction and chat. | `local/qwen2.5-coder:7b` |
+| `smol` | Fast model for background tasks (summaries, titles). | `local/qwen2.5-coder:7b` |
+| `slow` | Heavy reasoning model for complex architecture. | `local/deepseek-r1:32b` |
+| `plan` | Architect model used for creating work plans. | `local/deepseek-r1:32b` |
+| `task` | Model used for executing delegated sub-tasks. | `local/qwen2.5-coder:7b` |
+| `memory` | Model used for Hindsight context extraction. | `local/qwen2.5-coder:7b` |
 
-```bash
-omp           # interactive TUI
-omp --plan    # plan-only mode (no code edits)
-```
+---
 
-`oc` is aliased to `omp` in zsh for convenience.
+## 🔌 Tooling & MCP (Model Context Protocol)
 
-## Monitoring Hindsight
+`oh-my-pi` uses MCP to connect agents to external tools (git, filesystem, databases, etc.).
 
-Hindsight provides cross-session memory and is auto-started via a supervised background loop on every container boot.
+### 1. Configuration Layers
+- **Global Tooling (`~/.omp/agent/mcp.json`)**: Contains core servers baked into the image (`git`, `fetch`, `filesystem`, `time`, `codegraph`).
+- **Project Tooling (`.omp/mcp.json`)**: Contains stack-specific servers (e.g., `docker`, `aspire`, `shadcn`) generated by `bootstrap.sh`.
 
-```bash
-# Check health
-curl -sf http://localhost:8888/health && echo "Hindsight OK"
+### 2. Precedence & Discovery
+- **Project > User**: If a server name exists in both project and user config, the **project-level definition wins**.
+- **No Merging**: Duplicate server names are NOT merged. The first one discovered (project first) is used, and the others are ignored for that name.
+- **Independence**: Different-named servers from both files are combined. You don't need to redefine core servers in your project if you only want to add new ones.
 
-# View logs
-cat ~/.hindsight/hindsight.log
+---
 
-# Check if the supervisor is running
-ps aux | grep hindsight-supervisor | grep -v grep
-```
+## 🤖 Agents and Skills
 
-Key paths:
-- **Logs**: `~/.hindsight/hindsight.log`
-- **Supervisor lock**: `~/.hindsight/supervisor.lock` (prevents duplicate loops)
-- **Data**: `~/.hindsight/pgdata/` (persisted via named volume across rebuilds)
+### Included Agents
+- **`plan` (Prometheus)**: High-level architect. Scans the project, creates `.omp/plans/`, and delegates to specialists.
+- **`backend-expert`**: Senior .NET engineer.
+- **`frontend-expert`**: Senior Svelte/Web engineer.
+- **`quality-assurance`**: SDET focused on xUnit and Playwright.
 
-Fallback: change `memory.backend` in `~/.omp/agent/config.yml` from `hindsight` to `mnemopi` for lightweight SQLite mode.
+### Included Skills
+- **`plan-workflow`**: Governs the draft -> review -> approve -> execute cycle.
+- **`scaffold-workspace`**: Provides the `/scaffold` slash command to generate project structures.
+- **`handoff`**: Manages state transitions via native `/continue` and `task` blocks.
 
-## Persistence
+---
 
-All user state survives container restarts **and** full image rebuilds via named Docker volumes:
+## 💾 Persistence
 
-| Volume | Mounted at | Contents |
-|--------|-----------|---------|
-| `omp-devcontainer-base-omp-home` | `~/.omp` | omp config, sessions, installed plugins |
-| `omp-devcontainer-base-hindsight-data` | `~/.hindsight` | Hindsight Postgres data + logs |
-| `omp-devcontainer-base-ssh` | `~/.ssh` | SSH keys |
-| `omp-devcontainer-base-gh-config` | `~/.config/gh` | GitHub CLI auth |
-| `omp-devcontainer-base-persisted-git` | `~/.persisted-git` | gitconfig (symlinked → `~/.gitconfig`) |
-| `omp-devcontainer-base-zsh-history` | `~/.zsh_history_vol` | Shell history |
-| `omp-devcontainer-base-pnpm-store` | `~/.local/share/pnpm` | pnpm global package cache |
-| `omp-devcontainer-base-nuget` | `~/.nuget/packages` | NuGet package cache |
-| `omp-devcontainer-base-uv-cache` | `~/.cache/uv` | Python/uv package cache |
+Named Docker volumes ensure your data survives:
+- `~/.omp`: Agent configuration and session history.
+- `~/.hindsight`: Memory server data.
+- `~/.ssh`: SSH keys.
+- `~/.nuget`, `~/.local/share/pnpm`: Package caches.
 
-> **Note:** Docker-in-Docker inner state (`/var/lib/docker`) is intentionally **not** persisted — it is derived cache state and rebuilds automatically. This is by design.
+---
 
-## Troubleshooting
+## 🔍 Troubleshooting
 
-### Hindsight not starting
-
-```bash
-# Check the supervisor log
-cat ~/.hindsight/hindsight.log
-
-# Check if another supervisor loop is holding the lock
-ls -la ~/.hindsight/supervisor.lock
-
-# Force a restart (container's PID namespace clears stale locks on restart)
-bash .devcontainer/scripts/hindsight-supervisor.sh &
-```
-
-### Plugin install failures
-
-Plugins are installed with an idempotency sentinel. Delete it to force a clean reinstall:
-
-```bash
-rm ~/.omp/.plugins-installed-v1
-bash .devcontainer/scripts/install-omp-plugins.sh
-```
-
-Check npm registry reachability if the reinstall also fails:
-
-```bash
-curl -sf https://registry.npmjs.org/pi-atelier > /dev/null && echo "npm OK"
-```
-
-### Config seeding didn't happen
-
-```bash
-# Check whether seeding ran
-ls ~/.omp/.seeded-v1
-
-# If missing, re-run seeding (safe — checks sentinel before acting)
-bash .devcontainer/scripts/seed-omp-home.sh
-```
-
-### Resetting to image defaults
-
-```bash
-# WARNING: destroys all user edits to ~/.omp/agent/
-rm ~/.omp/.seeded-v1
-bash .devcontainer/scripts/seed-omp-home.sh
-```
+- **Hindsight Memory**: Check status with `curl http://localhost:8888/health`. Logs are at `~/.hindsight/hindsight.log`.
+- **Reset Defaults**: To restore original image settings, `rm ~/.omp/.seeded-v1` and restart the container.
+- **Models**: If agents can't connect, verify the `baseUrl` in `~/.omp/agent/models.yml` is reachable from inside the container (use `host.docker.internal` for host-hosted LLMs).

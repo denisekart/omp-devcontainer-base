@@ -1,0 +1,86 @@
+# omp-devcontainer-base default configuration
+# Baked at /usr/local/share/omp-defaults/agent/config.yml
+# Seeded into ~/.omp/agent/config.yml on first boot (never overwritten on rebuild)
+
+# LSP Configuration
+# Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/lsp-config.md
+lsp:
+  servers:
+    csharp:
+      command: "csharp-ls"
+    typescript:
+      command: "typescript-language-server"
+      args: ["--stdio"]
+    svelte:
+      command: "svelte-language-server"
+      args: ["--stdio"]
+    python:
+      command: "pylsp"
+    bash:
+      command: "bash-language-server"
+      args: ["start"]
+
+# Memory backend — Hindsight (in-container embedded Postgres, fully local)
+# Fallback: change to 'mnemopi' for lightweight SQLite mode
+memory:
+  backend: hindsight
+
+hindsight:
+  apiUrl: "http://localhost:8888"
+  scoping: "per-project-tagged"
+  autoRecall: true
+  autoRetain: true
+  recallBudget: "mid"
+  retainMode: "last-turn"
+
+# Plugin extensions (FULL array — in omp, arrays REPLACE not merge across config levels)
+# This exact list must be consistent with install-omp-plugins.sh and docs/plugins.md
+extensions:
+  - "pi-atelier"
+  - "pi-loop-police"
+  - "pi-lens"
+  - "context-mode"
+  - "@narumitw/pi-btw"
+
+# TUI theme — pi-atelier provides the status rail and activity sidebar
+theme:
+  name: "pi-atelier"
+
+# Plan workflow artifacts
+plan:
+  artifactDir: ".omp/plans"
+  draftDir: ".omp/drafts"
+  specsDir: ".omp/specs"
+
+# Model Role Mapping
+# Assign models defined in models.yml to native omp roles.
+modelRoles:
+  default: "local/qwen2.5-coder:7b"
+  smol: "local/qwen2.5-coder:7b"
+  slow: "local/deepseek-r1:32b"
+  plan: "local/deepseek-r1:32b"
+  task: "local/qwen2.5-coder:7b"
+  memory: "local/qwen2.5-coder:7b" # Used for mnemopi extraction
+
+# Local Tiny-Model Providers (Task-specific)
+# Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/local-models.md
+# Set to 'online' to use the role-mapped models, or specify a local tiny model.
+providers:
+  tinyModel: "online"        # e.g., "qwen3-0.6b" for fast titles
+  memoryModel: "online"      # e.g., "qwen3-1.7b" for robust extraction
+  autoThinkingModel: "online"
+  tinyModelDevice: "cpu"     # cpu (default), gpu, auto, metal
+  tinyModelDtype: "q4"       # q4 (default), fp16
+
+# Discovery paths
+skills:
+  enablePiUser: true
+  enablePiProject: true
+  customDirectories:
+    - "~/.omp/agent/skills"
+    - ".omp/skills"
+
+agents:
+  customDirectories:
+    - "~/.omp/agent/agents"
+    - ".omp/agents"

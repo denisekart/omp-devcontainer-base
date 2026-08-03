@@ -1,7 +1,8 @@
 {
   "name": "omp-devcontainer-base",
   "build": {
-    "dockerfile": "Dockerfile"
+    "dockerfile": "../build/Dockerfile",
+    "context": "../build"
   },
   "features": {
     "ghcr.io/devcontainers/features/common-utils": {
@@ -71,8 +72,8 @@
       }
     }
   },
-  "postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.omp /home/vscode/.hindsight /home/vscode/.ssh /home/vscode/.config/gh /home/vscode/.persisted-git /home/vscode/.zsh_history_vol /home/vscode/.local/share/pnpm /home/vscode/.nuget /home/vscode/.cache/uv 2>/dev/null || true && bash .devcontainer/scripts/link-gitconfig.sh && bash .devcontainer/scripts/seed-omp-home.sh && bash .devcontainer/scripts/install-omp-plugins.sh",
-  "postStartCommand": "bash .devcontainer/scripts/hindsight-supervisor.sh >/dev/null 2>&1 & disown",
+  "postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.omp /home/vscode/.hindsight /home/vscode/.ssh /home/vscode/.config/gh /home/vscode/.persisted-git /home/vscode/.zsh_history_vol /home/vscode/.local/share/pnpm /home/vscode/.nuget /home/vscode/.cache/uv 2>/dev/null || true && bash /usr/local/share/omp-scripts/link-gitconfig.sh && bash /usr/local/share/omp-scripts/seed-omp-home.sh && bash /usr/local/share/omp-scripts/install-omp-plugins.sh && bash /usr/local/share/omp-scripts/bootstrap.sh",
+  "postStartCommand": "bash /usr/local/share/omp-scripts/hindsight-supervisor.sh >/dev/null 2>&1 & disown",
   "_notes": {
     "dind_state": "INTENTIONAL: \/var\/lib\/docker is NOT persisted. Docker-in-Docker inner state (pulled images, containers) is ephemeral per rebuild. This is derived/cache state, not source-of-truth config."
   }
