@@ -1,0 +1,79 @@
+{
+  "name": "omp-devcontainer-base",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils": {
+      "configureZshAsDefaultShell": true,
+      "username": "vscode"
+    },
+    "ghcr.io/devcontainers/features/github-cli": "latest",
+    "ghcr.io/devcontainers/features/docker-in-docker": {
+      "version": "latest",
+      "enableNonRootDocker": true,
+      "moby": false
+    }
+  },
+  "updateRemoteUserUID": true,
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/home/vscode/.dotnet/tools:/home/vscode/.local/bin"
+  },
+  "mounts": [
+    "source=omp-devcontainer-base-omp-home,target=/home/vscode/.omp,type=volume",
+    "source=omp-devcontainer-base-hindsight-data,target=/home/vscode/.hindsight,type=volume",
+    "source=omp-devcontainer-base-ssh,target=/home/vscode/.ssh,type=volume",
+    "source=omp-devcontainer-base-gh-config,target=/home/vscode/.config/gh,type=volume",
+    "source=omp-devcontainer-base-persisted-git,target=/home/vscode/.persisted-git,type=volume",
+    "source=omp-devcontainer-base-zsh-history,target=/home/vscode/.zsh_history_vol,type=volume",
+    "source=omp-devcontainer-base-pnpm-store,target=/home/vscode/.local/share/pnpm,type=volume",
+    "source=omp-devcontainer-base-nuget,target=/home/vscode/.nuget/packages,type=volume",
+    "source=omp-devcontainer-base-uv-cache,target=/home/vscode/.cache/uv,type=volume"
+  ],
+  "forwardPorts": [
+    8888
+  ],
+  "portsAttributes": {
+    "8888": {
+      "label": "Hindsight Memory",
+      "onAutoForward": "notify"
+    },
+    "0-65535": {
+      "onAutoForward": "ignore"
+    }
+  },
+  "remoteUser": "vscode",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-dotnettools.csharp",
+        "ms-dotnettools.csdevkit",
+        "ms-dotnettools.vscode-dotnet-runtime",
+        "svelte.svelte-vscode",
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint",
+        "ms-python.python",
+        "bradlc.vscode-tailwindcss",
+        "ms-azuretools.vscode-docker",
+        "GitHub.vscode-pull-request-github",
+        "christian-kohler.path-intellisense",
+        "mikestead.dotenv",
+        "EditorConfig.EditorConfig",
+        "eamodio.gitlens",
+        "tamasfe.even-better-toml"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "terminal.integrated.gpuAcceleration": "off",
+        "files.insertFinalNewline": true,
+        "files.trimTrailingWhitespace": true
+      }
+    }
+  },
+  "postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.omp /home/vscode/.hindsight /home/vscode/.ssh /home/vscode/.config/gh /home/vscode/.persisted-git /home/vscode/.zsh_history_vol /home/vscode/.local/share/pnpm /home/vscode/.nuget /home/vscode/.cache/uv 2>/dev/null || true && bash .devcontainer/scripts/link-gitconfig.sh && bash .devcontainer/scripts/seed-omp-home.sh && bash .devcontainer/scripts/install-omp-plugins.sh",
+  "postStartCommand": "bash .devcontainer/scripts/hindsight-supervisor.sh >/dev/null 2>&1 & disown",
+  "_notes": {
+    "dind_state": "INTENTIONAL: \/var\/lib\/docker is NOT persisted. Docker-in-Docker inner state (pulled images, containers) is ephemeral per rebuild. This is derived/cache state, not source-of-truth config."
+  }
+}
