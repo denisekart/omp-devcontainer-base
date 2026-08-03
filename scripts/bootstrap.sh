@@ -31,7 +31,7 @@ fi
 
 # Auto-detect stack if not specified
 if [[ "$STACK" == "generic" ]]; then
-  if find . -name "*.csproj" -o -name "*.sln" 2>/dev/null | head -1 | grep -q .; then
+  if find . \( -name "*.csproj" -o -name "*.sln" \) 2>/dev/null | head -1 | grep -q .; then
     if grep -rl "AddProject" . --include="*.cs" 2>/dev/null | head -1 | grep -q .; then
       if find . -name "package.json" 2>/dev/null | xargs grep -l '"svelte"' 2>/dev/null | head -1 | grep -q .; then
         STACK="dotnet-aspire-svelte"
