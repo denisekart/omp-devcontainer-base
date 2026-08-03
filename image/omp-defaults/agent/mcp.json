@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git"],
+      "enabled": true
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+      "enabled": true
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "enabled": true
+    },
+    "sequentialthinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "enabled": true
+    },
+    "time": {
+      "command": "uvx",
+      "args": ["mcp-server-time"],
+      "enabled": true
+    }
+  },
+  "_notes": {
+    "codegraph": "Deferred — requires polycodegraph installed and project indexed; add to project-level .omp/mcp.json if needed",
+    "stack_specific": "docker, aspire, shadcn, puppeteer are written by bootstrap.sh to project-level .omp/mcp.json, NOT here"
+  }
+}
