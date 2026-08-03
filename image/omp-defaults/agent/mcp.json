@@ -2,32 +2,27 @@
   "mcpServers": {
     "git": {
       "command": "uvx",
-      "args": ["mcp-server-git"],
-      "enabled": true
+      "args": ["mcp-server-git"]
     },
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem"],
-      "enabled": true
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "${HOME}/.omp", "${containerWorkspaceFolder}"]
     },
     "fetch": {
       "command": "uvx",
-      "args": ["mcp-server-fetch"],
-      "enabled": true
+      "args": ["mcp-server-fetch"]
     },
     "sequentialthinking": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
-      "enabled": true
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
     },
     "time": {
       "command": "uvx",
-      "args": ["mcp-server-time"],
-      "enabled": true
+      "args": ["mcp-server-time"]
     }
   },
   "_notes": {
-    "codegraph": "Deferred — requires polycodegraph installed and project indexed; add to project-level .omp/mcp.json if needed",
-    "stack_specific": "docker, aspire, shadcn, puppeteer are written by bootstrap.sh to project-level .omp/mcp.json, NOT here"
+    "codegraph": "Add 'codegraph mcp serve' here if polycodegraph is installed and project indexed",
+    "stack_specific": "docker, aspire, shadcn, puppeteer belong in project-level .omp/mcp.json, written by bootstrap.sh"
   }
 }
