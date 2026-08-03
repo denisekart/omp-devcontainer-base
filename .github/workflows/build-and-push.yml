@@ -1,0 +1,53 @@
+name: Build and Push OMP Base Image
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false # Security: Don't persist GITHUB_TOKEN in the checkout
+
+      - name: Verify tag is on main
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor ${{ github.sha }} origin/main; then
+            echo "Error: Tag ${{ github.ref_name }} is not on the main branch."
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: actions/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # Security: GITHUB_TOKEN is scoped to this run and expires automatically.
+          # It is safer than a Personal Access Token (PAT).
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./build
+          file: ./build/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/denisekart/omp-devcontainer-base:${{ github.ref_name }}
+            ghcr.io/denisekart/omp-devcontainer-base:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

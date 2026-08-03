@@ -49,15 +49,13 @@ Profiles share project-level configuration (`.omp/`), but keep their own model h
 ## 🏗️ Building and Publishing
 
 ### Build the Image
-From the root of this repository:
+The image is built for both `linux/amd64` and `linux/arm64` via GitHub Actions. To build it manually for multiple architectures:
 ```bash
-docker build -t ghcr.io/your-org/omp-devcontainer-base:latest -f build/Dockerfile build/
+docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/denisekart/omp-devcontainer-base:latest -f build/Dockerfile build/ --push
 ```
 
 ### Publish the Image
-```bash
-docker push ghcr.io/your-org/omp-devcontainer-base:latest
-```
+Publication is handled automatically by the [GitHub Workflow](#-github-workflow) when a tag is pushed.
 
 ---
 
@@ -70,7 +68,7 @@ To add `oh-my-pi` support to any repository:
    ```json
    {
      "name": "my-omp-project",
-     "image": "ghcr.io/your-org/omp-devcontainer-base:latest",
+     "image": "ghcr.io/denisekart/omp-devcontainer-base:latest",
      "mounts": [
        "source=omp-home,target=/home/vscode/.omp,type=volume",
        "source=hindsight-data,target=/home/vscode/.hindsight,type=volume"
