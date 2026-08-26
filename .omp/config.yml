@@ -1,0 +1,11 @@
+# Project-level omp settings
+# Extends user-level ~/.omp/agent/config.yml
+
+# Assign repository-level models defined in .omp/models.yml to native omp roles
+modelRoles:
+  default: "litellm/qwen3.8-27b"
+  smol: "litellm/qwen3-coder-4b"
+  slow: "litellm/qwen3.8-27b"
+  plan: "litellm/qwen3.8-27b"
+  task: "litellm/qwen3.8-27b"
+  memory: "litellm/qwen3-coder-4b"

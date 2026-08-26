@@ -1,0 +1,13 @@
+# Repository-level model configuration for oh-my-pi (omp)
+# Connects to LiteLLM OpenAI-compatible endpoint
+
+providers:
+  litellm:
+    api: openai-completions
+    baseUrl: "http://spark.orca-hue.ts.net:4000/v1"
+    apiKey: "anything"
+    models:
+      qwen3.8-27b:
+        id: "qwen3.8-27b"
+      qwen3-coder-4b:
+        id: "qwen3-coder-4b"

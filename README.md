@@ -88,7 +88,10 @@ To add `oh-my-pi` support to any repository:
    ```
 
 4. **Configure your Models**:
-   Edit `~/.omp/agent/models.yml` to define your LLM endpoints and `~/.omp/agent/config.yml` to map them to roles. See [Model Configuration](#-model-configuration--roles) below.
+   Configure models at either the **repository level** (recommended so configurations are committed and shared with the workspace) or the **user level** (`~/.omp/agent/`):
+   - **Repository Level**: Define endpoints in `.omp/models.yml` and role mappings in `.omp/config.yml`.
+   - **User Level**: Edit `~/.omp/agent/models.yml` and `~/.omp/agent/config.yml`.
+   See [Model Configuration & Roles](#-model-configuration--roles) below for complete step-by-step instructions (including LiteLLM / custom OpenAI-compatible proxies).
 
 5. **Start Coding**:
    Run `omp` to start your first session.
@@ -123,28 +126,66 @@ The base image seeds default configurations into your user home directory:
     ```
 -   **`~/.omp/agent/config.yml`**: Contains global role mappings and LSP settings.
 
-### 2. Project Overrides
+### 2. Repository-Level Configuration (Project Level)
 
-You can specialize model selection for a specific project by editing `.omp/config.yml` in your project root. Overrides at the project level take precedence over global settings.
+To maintain consistency across team members or ensure your model setup lives directly in version control rather than user-specific directories, configure models at the repository level inside the `.omp/` folder of your project root.
 
-```yaml
-# .omp/config.yml
-modelRoles:
-  plan: "openai/gpt-4o" # Use a cloud model for planning in this specific project
-```
+#### Setup Instructions for a Freshly Initialized Repository:
 
-### 3. Native Model Roles
+1. **Ensure `.omp` directory exists**:
+   ```bash
+   mkdir -p .omp
+   ```
+   *(Note: If you run `bootstrap.sh`, `.omp/` will already be created.)*
 
-The following roles are used by the `omp` harness:
+2. **Define Models in `.omp/models.yml`**:
+   Create `.omp/models.yml` in your repository root pointing to your LiteLLM instance (or any OpenAI-compatible gateway such as `http://spark.orca-hue.ts.net:4000/v1`):
 
-| Role | Purpose | Default Mapping |
-| :--- | :--- | :--- |
-| `default` | Primary model for interaction and chat. | `local/qwen3-coder:32b` |
-| `smol` | Fast model for background tasks (summaries, titles). | `local/qwen3-coder:7b` |
-| `slow` | Heavy reasoning model for complex architecture. | `local/deepseek-r1:70b` |
-| `plan` | Architect model used for creating work plans. | `local/deepseek-r1:70b` |
-| `task` | Model used for executing delegated sub-tasks. | `local/qwen3-coder:32b` |
-| `memory` | Model used for Hindsight context extraction. | `local/qwen3-coder:7b` |
+   ```yaml
+   # .omp/models.yml
+   providers:
+     litellm:
+       api: openai-completions
+       baseUrl: "http://spark.orca-hue.ts.net:4000/v1"
+       apiKey: "anything" # or your LiteLLM master key / auth token
+       models:
+         qwen3.8-27b:
+           id: "qwen3.8-27b"
+         qwen3-coder-4b:
+           id: "qwen3-coder-4b"
+   ```
+
+3. **Map Roles in `.omp/config.yml`**:
+   Assign the defined models to native `omp` roles in `.omp/config.yml`:
+
+   ```yaml
+   # .omp/config.yml
+   modelRoles:
+     default: "litellm/qwen3.8-27b"
+     smol: "litellm/qwen3-coder-4b"
+     slow: "litellm/qwen3.8-27b"
+     plan: "litellm/qwen3.8-27b"
+     task: "litellm/qwen3.8-27b"
+     memory: "litellm/qwen3-coder-4b"
+   ```
+
+4. **Verify Discovery**:
+   When launching `omp`, the agent automatically merges `.omp/models.yml` and `.omp/config.yml` over user-level configurations.
+
+---
+
+### 3. Native Model Roles & LiteLLM Role Mapping
+
+The following native roles are used by the `omp` harness and mapped to the LiteLLM models:
+
+| Role | Purpose | Default Local Mapping | LiteLLM Setup Mapping | Rationale |
+| :--- | :--- | :--- | :--- | :--- |
+| `default` | Primary model for interactive chat and coding. | `local/qwen3-coder:32b` | `litellm/qwen3.8-27b` | High capability for general instruction and code generation. |
+| `smol` | Fast, lightweight model for background tasks (summaries, titles). | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Fast response times and low latency for utility tasks. |
+| `slow` | Heavy reasoning model for complex architectural problems. | `local/deepseek-r1:70b` | `litellm/qwen3.8-27b` | Maximum capability available for complex problem-solving. |
+| `plan` | Architect model used for planning and generating `.omp/plans/`. | `local/deepseek-r1:70b` | `litellm/qwen3.8-27b` | Strong structured output and planning ability. |
+| `task` | Model used for executing delegated subagent tasks. | `local/qwen3-coder:32b` | `litellm/qwen3.8-27b` | Capable code generation for subagent work items. |
+| `memory` | Model used for Hindsight / memory extraction. | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Quick extraction of semantic observations into memory. |
 
 ### 4. Preferred Local Models (128GB GB10)
 
