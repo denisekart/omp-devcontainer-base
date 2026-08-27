@@ -5,21 +5,21 @@
     "context": "../build"
   },
   "features": {
-    "ghcr.io/devcontainers/features/common-utils": {
-      "configureZshAsDefaultShell": true,
-      "username": "vscode"
-    },
-    "ghcr.io/devcontainers/features/github-cli": "latest",
     "ghcr.io/devcontainers/features/docker-in-docker": {
       "version": "latest",
       "enableNonRootDocker": true,
       "moby": false
     }
   },
+
+  "remoteUser": "vscode",
+
   "updateRemoteUserUID": true,
+
   "remoteEnv": {
     "PATH": "${containerEnv:PATH}:/home/vscode/.dotnet/tools:/home/vscode/.local/bin"
   },
+
   "mounts": [
     "source=omp-devcontainer-base-omp-home,target=/home/vscode/.omp,type=volume",
     "source=omp-devcontainer-base-hindsight-data,target=/home/vscode/.hindsight,type=volume",
@@ -31,9 +31,9 @@
     "source=omp-devcontainer-base-nuget,target=/home/vscode/.nuget/packages,type=volume",
     "source=omp-devcontainer-base-uv-cache,target=/home/vscode/.cache/uv,type=volume"
   ],
-  "forwardPorts": [
-    8888
-  ],
+
+  "forwardPorts": [8888],
+
   "portsAttributes": {
     "8888": {
       "label": "Hindsight Memory",
@@ -43,7 +43,7 @@
       "onAutoForward": "ignore"
     }
   },
-  "remoteUser": "vscode",
+
   "customizations": {
     "vscode": {
       "extensions": [
@@ -72,6 +72,8 @@
       }
     }
   },
-  "postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.omp /home/vscode/.hindsight /home/vscode/.ssh /home/vscode/.config/gh /home/vscode/.persisted-git /home/vscode/.zsh_history_vol /home/vscode/.local/share/pnpm /home/vscode/.nuget /home/vscode/.cache/uv 2>/dev/null || true && bash /usr/local/share/omp-scripts/link-gitconfig.sh && bash /usr/local/share/omp-scripts/seed-omp-home.sh && bash /usr/local/share/omp-scripts/install-omp-plugins.sh && bash /usr/local/share/omp-scripts/bootstrap.sh",
-  "postStartCommand": "bash /usr/local/share/omp-scripts/hindsight-supervisor.sh >/dev/null 2>&1 & disown",
+
+  "postCreateCommand": "chown -R vscode:vscode /home/vscode/.omp /home/vscode/.hindsight /home/vscode/.ssh /home/vscode/.config/gh /home/vscode/.persisted-git /home/vscode/.zsh_history_vol /home/vscode/.local/share/pnpm /home/vscode/.nuget /home/vscode/.cache/uv 2>/dev/null || true && bash /usr/local/share/omp-scripts/link-gitconfig.sh && bash /usr/local/share/omp-scripts/seed-omp-home.sh && bash /usr/local/share/omp-scripts/install-omp-plugins.sh && bash /usr/local/share/omp-scripts/bootstrap.sh",
+
+  "postStartCommand": "bash /usr/local/share/omp-scripts/hindsight-supervisor.sh >/dev/null 2>&1 & disown"
 }
