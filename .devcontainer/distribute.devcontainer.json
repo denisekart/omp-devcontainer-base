@@ -1,9 +1,7 @@
 {
   "name": "omp-devcontainer-base",
-  "build": {
-    "dockerfile": "../build/Dockerfile",
-    "context": "../build"
-  },
+  "image": "ghcr.io/denisekart/omp-devcontainer-base:latest",
+
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker": {
       "version": "latest",
