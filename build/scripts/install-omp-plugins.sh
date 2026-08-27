@@ -9,9 +9,13 @@
 # Idempotency: uses ~/.omp/.plugins-installed-v1 sentinel.
 # To force reinstall: rm ~/.omp/.plugins-installed-v1
 #
-# The lockfile is written ONLY to ~/.omp/plugins.lock.json (persisted .omp
-# volume). This script never writes into the workspace: the base image is
-# shared across repositories and must not touch the consumer repo.
+# WHY ROOT: omp plugins are global bun packages installed into the image's
+# global bun prefix (BUN_INSTALL=/usr/local, root-owned — see Dockerfile).
+# The vscode user cannot write there ("bun is unable to write files to
+# tempdir: EACCES"), so installs run via sudo (passwordless for vscode).
+# HOME and BUN_INSTALL are passed through explicitly (sudo resets the
+# environment) so per-user state stays under /home/vscode and bun keeps
+# using the /usr/local prefix; affected user trees are chowned back at the end.
 set -euo pipefail
 
 SENTINEL="${HOME}/.omp/.plugins-installed-v1"
@@ -57,13 +61,18 @@ PLUGINS=(
 )
 
 # Detect whether the CLI supports the plugin subcommand. If it doesn't (e.g.
-# an old binary), degrade to a global npm install — which needs root because
-# the NodeSource Node prefix is /usr.
+# an old binary), degrade to a global npm install — which also needs root
+# (NodeSource Node prefix is /usr).
 USE_NPM_FALLBACK=0
 if ! "${OMP_CMD}" plugin --help >/dev/null 2>&1; then
   echo "install-omp-plugins.sh: WARNING — '${OMP_CMD} plugin' not supported, using npm global install fallback"
   USE_NPM_FALLBACK=1
 fi
+
+# Run as root while keeping the user's HOME and bun prefix (sudo resets both).
+run_as_root_with_user_home() {
+  sudo HOME="${HOME}" BUN_INSTALL="${BUN_INSTALL:-/usr/local}" "$@"
+}
 
 install_one() {
   local pkg="$1"
@@ -71,7 +80,7 @@ install_one() {
     sudo npm install -g "${pkg}"
   else
     # Verify flags with: omp plugin install --help
-    "${OMP_CMD}" plugin install "${pkg}"
+    run_as_root_with_user_home "${OMP_CMD}" plugin install "${pkg}"
   fi
 }
 
@@ -93,6 +102,10 @@ if [[ ${#FAILED[@]} -gt 0 ]]; then
   echo "install-omp-plugins.sh: no sentinel written — next run will retry." >&2
   exit 1
 fi
+
+# Return ownership of any user-home trees the root install touched
+# (omp state, bun/npm caches).
+sudo chown -R vscode:vscode "${HOME}/.omp" "${HOME}/.bun" "${HOME}/.cache" 2>/dev/null || true
 
 # Capture resolved versions and integrity digests into plugins.lock.json
 echo "install-omp-plugins.sh: capturing version and integrity data..."
