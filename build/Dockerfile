@@ -36,6 +36,7 @@ RUN apt-get update && apt-get -y install --no-install-recommends \
     xdg-utils \
     tmux \
     shellcheck \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Install yq (YAML processor)
@@ -49,7 +50,24 @@ RUN set -eux; \
     chmod +x /usr/local/bin/yq
 
 # Install eza (modern ls replacement)
-RUN set -eux;     if apt-get update && apt-get install -y --no-install-recommends eza; then       :;     else       rm -rf /var/lib/apt/lists/*;       arch="$(dpkg --print-architecture)";       case "$arch" in         amd64) eza_arch="x86_64" ;;         arm64) eza_arch="aarch64" ;;         *) eza_arch="x86_64" ;;       esac;       tmpdir="$(mktemp -d)";       wget -qO "$tmpdir/eza.tar.gz" "https://github.com/eza-community/eza/releases/latest/download/eza_${eza_arch}-unknown-linux-gnu.tar.gz";       tar -xzf "$tmpdir/eza.tar.gz" -C "$tmpdir";       install -m 0755 "$(find "$tmpdir" -type f -name eza | head -n 1)" /usr/local/bin/eza;       rm -rf "$tmpdir";     fi;     rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    if apt-get update && apt-get install -y --no-install-recommends eza; then \
+      :; \
+    else \
+      rm -rf /var/lib/apt/lists/*; \
+      arch="$(dpkg --print-architecture)"; \
+      case "$arch" in \
+        amd64) eza_arch="x86_64" ;; \
+        arm64) eza_arch="aarch64" ;; \
+        *) eza_arch="x86_64" ;; \
+      esac; \
+      tmpdir="$(mktemp -d)"; \
+      wget -qO "$tmpdir/eza.tar.gz" "https://github.com/eza-community/eza/releases/latest/download/eza_${eza_arch}-unknown-linux-gnu.tar.gz"; \
+      tar -xzf "$tmpdir/eza.tar.gz" -C "$tmpdir"; \
+      install -m 0755 "$(find "$tmpdir" -type f -name eza | head -n 1)" /usr/local/bin/eza; \
+      rm -rf "$tmpdir"; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
 
 # Install uv (fast Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
@@ -119,9 +137,12 @@ RUN arch="$(dpkg --print-architecture)" && \
     wget -qO /usr/local/bin/shfmt "https://github.com/mvdan/sh/releases/download/v3.13.1/shfmt_v3.13.1_linux_${arch}" && \
     chmod +x /usr/local/bin/shfmt
 
-# Ensure vscode user belongs to docker group (required for DinD)
+# Ensure vscode user belongs to docker group (required for DinD) and has passwordless sudo
 RUN groupadd -f docker \
-    && usermod -aG docker vscode
+    && usermod -aG docker vscode \
+    && usermod -aG sudo vscode \
+    && echo "vscode ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/vscode \
+    && chmod 0440 /etc/sudoers.d/vscode
 
 # Final environment setup
 RUN apt-get update && apt-get install -y --no-install-recommends zsh iptables figlet \
@@ -175,6 +196,7 @@ RUN mkdir -p ~/.zsh_history_dir \
     && printf '%s\n' 'alias oc="omp"' >> ~/.zshrc \
     && printf '%s\n' 'alias fd="fdfind"' >> ~/.zshrc \
     && printf '%s\n' 'export BUN_INSTALL=/usr/local' >> ~/.zshrc \
+    && printf '%s\n' 'export DOTNET_ROOT=/usr/share/dotnet' >> ~/.zshrc \
     && printf '%s\n' 'export PATH=$BUN_INSTALL/bin:$DOTNET_ROOT:/home/vscode/.dotnet/tools:/home/vscode/.local/bin:/usr/local/bin:$PATH' >> ~/.zshrc \
     && printf '%s\n' '' >> ~/.zshrc \
     && printf '%s\n' '# ── Prevent background job output from corrupting TUI displays ──────────' >> ~/.zshrc \
