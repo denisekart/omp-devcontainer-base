@@ -6,55 +6,120 @@
 #
 # Presets: dotnet-aspire-svelte | dotnet-only | svelte-only | generic
 #
-# Writes .omp/, AGENTS.md.
-# Project structure (src/tests/docs) is handled via `/scaffold` slash command in omp.
+# Writes AGENTS.md and .omp/ configuration into the workspace root
+# (git toplevel if available, otherwise the current directory).
+# Existing files are never overwritten.
+# Project structure (src/tests/docs) is handled via the /scaffold slash command.
 set -euo pipefail
 
-STACK="generic"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STACK_SET=0
+STACK=""
 
-# Parse args
+usage() {
+  echo "Usage: bootstrap.sh [--stack <preset>]"
+  echo ""
+  echo "Presets: dotnet-aspire-svelte | dotnet-only | svelte-only | generic"
+  echo "  --stack <preset>  Force a stack preset instead of auto-detecting"
+  echo "  -h, --help        Show this help"
+}
+
+# --- Args ---
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --stack) STACK="${2:-generic}"; shift 2 ;;
-    *) echo "bootstrap.sh: unknown arg: $1" >&2; exit 1 ;;
+    --stack)
+      if [[ $# -lt 2 || -z "${2:-}" ]]; then
+        echo "bootstrap.sh: --stack requires a value" >&2
+        usage >&2
+        exit 1
+      fi
+      STACK="$2"
+      STACK_SET=1
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "bootstrap.sh: unknown arg: $1" >&2
+      usage >&2
+      exit 1
+      ;;
   esac
 done
 
-# Auto-detect stack if not specified
-if [[ "$STACK" == "generic" ]]; then
-  if find . \( -name "*.csproj" -o -name "*.sln" \) 2>/dev/null | head -1 | grep -q .; then
-    if grep -rl "AddProject" . --include="*.cs" 2>/dev/null | head -1 | grep -q .; then
-      if find . -name "package.json" 2>/dev/null | xargs grep -l '"svelte"' 2>/dev/null | head -1 | grep -q .; then
+# --- Resolve the workspace root once; every write below is anchored to it ---
+if WORKSPACE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  :
+else
+  WORKSPACE_ROOT="$(pwd)"
+fi
+cd "$WORKSPACE_ROOT"
+echo "bootstrap.sh: workspace root: $WORKSPACE_ROOT"
+
+# --- Stack detection: pruned, first-match, no xargs-empty-input trap ---
+find_pruned() {
+  # Find relative to CWD, skipping VCS/build/dependency trees
+  find . \( -name node_modules -o -name .git -o -name bin -o -name obj \
+            -o -name dist -o -name .omp \) -prune -o "$@" 2>/dev/null
+}
+
+has_dotnet() {
+  find_pruned \( -name '*.sln' -o -name '*.csproj' \) -print -quit | grep -q .
+}
+
+has_aspire() {
+  # AppHost projects are conventionally named *AppHost*.csproj and/or
+  # reference the Aspire.Hosting.AppHost package
+  if [[ -n "$(find_pruned -name '*AppHost*.csproj' -print -quit)" ]]; then
+    return 0
+  fi
+  find_pruned -name '*.csproj' -print0 \
+    | xargs -0 -r grep -l 'Aspire\.Hosting\.AppHost' 2>/dev/null | grep -q .
+}
+
+has_svelte() {
+  find_pruned -name package.json -print0 \
+    | xargs -0 -r grep -l '"svelte"' 2>/dev/null | grep -q .
+}
+
+if [[ "$STACK_SET" -eq 1 ]]; then
+  echo "bootstrap.sh: using stack: $STACK"
+else
+  if has_dotnet; then
+    if has_aspire; then
+      if has_svelte; then
         STACK="dotnet-aspire-svelte"
-        echo "bootstrap.sh: auto-detected stack: dotnet-aspire-svelte"
       else
         STACK="dotnet-only"
-        echo "bootstrap.sh: auto-detected stack: dotnet-only"
       fi
+    else
+      STACK="dotnet-only"
     fi
-  elif find . -name "package.json" 2>/dev/null | xargs grep -l '"svelte"' 2>/dev/null | head -1 | grep -q .; then
+  elif has_svelte; then
     STACK="svelte-only"
-    echo "bootstrap.sh: auto-detected stack: svelte-only"
   else
-    echo "bootstrap.sh: no stack detected, using: generic"
+    STACK="generic"
   fi
+  echo "bootstrap.sh: detected stack: $STACK"
 fi
 
-# Detect profiles from stack
+# --- Map stack to profiles ---
 PROFILES=()
 case "$STACK" in
   dotnet-aspire-svelte) PROFILES=("dotnet-aspire" "svelte") ;;
   dotnet-only)          PROFILES=("dotnet-aspire") ;;
   svelte-only)          PROFILES=("svelte") ;;
   generic)              PROFILES=() ;;
-  *) echo "bootstrap.sh: unknown stack: $STACK" >&2; exit 1 ;;
+  *)
+    echo "bootstrap.sh: unknown stack: $STACK (expected: dotnet-aspire-svelte | dotnet-only | svelte-only | generic)" >&2
+    exit 1
+    ;;
 esac
 
-# Helper: write file only if it does not exist (never overwrite)
+# --- Helpers ---
 write_if_absent() {
-  local target="$1"
-  local content="$2"
+  local target="$1" content="$2"
   if [[ -e "$target" ]]; then
     echo "bootstrap.sh: SKIP (exists): $target"
     return 0
@@ -64,69 +129,87 @@ write_if_absent() {
   echo "bootstrap.sh: created: $target"
 }
 
+profile_bullets() {
+  if [[ ${#PROFILES[@]} -eq 0 ]]; then
+    echo "(none)"
+  else
+    local p
+    for p in "${PROFILES[@]}"; do
+      echo "- $p"
+    done
+  fi
+}
+
 echo "bootstrap.sh: stack=$STACK profiles=${PROFILES[*]:-none}"
 
-# --- Write .omp structure ---
-mkdir -p .omp/drafts .omp/plans
-touch .omp/drafts/.gitkeep .omp/plans/.gitkeep
-echo "bootstrap.sh: created .omp/{drafts,plans}/"
+# --- .omp directory skeleton ---
+mkdir -p .omp/drafts .omp/plans .omp/skills
+touch .omp/drafts/.gitkeep .omp/plans/.gitkeep .omp/skills/.gitkeep
+echo "bootstrap.sh: ensured .omp/{drafts,plans,skills}/"
 
-# --- Write AGENTS.md context file ---
+# --- AGENTS.md project context file ---
 AGENTS_CONTENT="# Project Context (omp-devcontainer-base bootstrap)
 
 ## Stack
-$STACK
+${STACK}
 
 ## Active omp Profiles
-$(for p in "${PROFILES[@]:-}"; do echo "- $p"; done)
+$(profile_bullets)
 
 ## Profiles Location
 User-level core skills and agents are active from ~/.omp/agent/skills/ and ~/.omp/agent/agents/ (baked into the base image).
 Project-level overrides can be placed in .omp/skills/.
 
 ## Native Workflow
-- **Delegation**: Use the `task` tool to delegate work to specialized agents (e.g., `task(agent="backend-expert", task="...")`).
-- **Memory**: Use the `recall` tool to check for prior context and the `store` tool to save new project-wide learnings.
-- **Handoff**: Use `/continue` to save state and resume in a fresh session when context becomes too heavy.
-- **Plan Mode**: Use the `--plan` flag to create plans in `.omp/plans/`.
+- **Delegation**: Use the \`task\` tool to delegate work to specialized agents (e.g., \`task(agent=\"backend-expert\", task=\"...\")\`).
+- **Memory**: Use the \`recall\` tool to check for prior context and the \`store\` tool to save new project-wide learnings.
+- **Handoff**: Use \`/continue\` to save state and resume in a fresh session when context becomes too heavy.
+- **Plan Mode**: Use the \`--plan\` flag to create plans in \`.omp/plans/\`.
 
 ## Scaffolding
 - Run \`/scaffold\` to generate the recommended project structure for the current stack.
 "
 write_if_absent "AGENTS.md" "$AGENTS_CONTENT"
 
-# --- Write .omp/config.yml ---
+# --- .omp/config.yml ---
 OMP_CONFIG="# Project-level omp settings
 # Extends user-level ~/.omp/agent/config.yml
 # Arrays REPLACE (not merge) — restate the full list if overriding extensions
 
-stack: $STACK
+stack: ${STACK}
 "
 write_if_absent ".omp/config.yml" "$OMP_CONFIG"
 
-# --- Write .omp/mcp.json (project-level, stack-specific servers) ---
-# Note: Core servers (git, fetch, time, filesystem) are already in global ~/.omp/agent/mcp.json
-STACK_MCP_SERVERS=""
+# --- .omp/mcp.json (project-level, stack-specific servers) ---
+# Core servers (git, fetch, time, etc.) are already in ~/.omp/agent/mcp.json.
+# Built with jq -n so the file is guaranteed valid JSON; aborts if jq fails.
+MCP_SCHEMA="https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json"
+MCP_JSON=""
 case "$STACK" in
   dotnet-aspire-svelte|dotnet-only)
-    STACK_MCP_SERVERS='"docker": {"command": "uvx", "args": ["mcp-server-docker"]}, "aspire": {"command": "aspire", "args": ["agent", "mcp"]}, "shadcn": {"command": "npx", "args": ["-y", "shadcn@latest", "mcp"]}, "puppeteer": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-puppeteer"]}' ;;
+    MCP_JSON="$(jq -n --arg schema "$MCP_SCHEMA" '{
+      "$schema": $schema,
+      mcpServers: {
+        docker:    {command: "uvx",    args: ["mcp-server-docker"]},
+        aspire:    {command: "aspire", args: ["agent", "mcp"]},
+        shadcn:    {command: "npx",    args: ["-y", "shadcn@latest", "mcp"]},
+        puppeteer: {command: "npx",    args: ["-y", "@modelcontextprotocol/server-puppeteer"]}
+      }
+    }')"
+    ;;
   svelte-only)
-    STACK_MCP_SERVERS='"shadcn": {"command": "npx", "args": ["-y", "shadcn@latest", "mcp"]}, "puppeteer": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-puppeteer"]}' ;;
-  generic)
-    STACK_MCP_SERVERS="" ;;
+    MCP_JSON="$(jq -n --arg schema "$MCP_SCHEMA" '{
+      "$schema": $schema,
+      mcpServers: {
+        shadcn:    {command: "npx", args: ["-y", "shadcn@latest", "mcp"]},
+        puppeteer: {command: "npx", args: ["-y", "@modelcontextprotocol/server-puppeteer"]}
+      }
+    }')"
+    ;;
 esac
 
-if [[ -n "$STACK_MCP_SERVERS" ]]; then
-  MCP_JSON='{
-  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
-  "mcpServers": {'"${STACK_MCP_SERVERS}"'}
-}'
-  write_if_absent ".omp/mcp.json" "$(echo "$MCP_JSON" | jq . 2>/dev/null || echo "$MCP_JSON")"
+if [[ -n "$MCP_JSON" ]]; then
+  write_if_absent ".omp/mcp.json" "$MCP_JSON"
 fi
-
-# --- Ensure .omp/skills directory exists for project overrides ---
-mkdir -p .omp/skills
-touch .omp/skills/.gitkeep
-echo "bootstrap.sh: created .omp/skills/ for project-level overrides"
 
 echo "bootstrap.sh: done (stack=$STACK)"

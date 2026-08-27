@@ -1,36 +1,93 @@
 #!/usr/bin/env bash
 # seed-omp-home.sh — First-boot seeding of omp config from immutable image defaults
-# Uses ~/.omp/.seeded-v1 as sentinel to avoid overwriting user edits on rebuild.
+#
+# Source: /usr/local/share/omp-defaults/agent (baked into the image, immutable)
+# Target: ~/.omp/agent (persistent volume — user state, sacred)
+#
+# Contract:
+#   - NEVER overwrites existing files in the target. User edits always win.
+#   - First boot: copies all defaults.
+#   - Image update with changed defaults: auto re-merges — new default files are
+#     added, existing files are left alone. Detected by comparing a content hash
+#     of the source tree, stored inside the sentinel file.
+#   - Sentinel: ~/.omp/.seeded-v1 (contains the source hash, not just a marker).
+#
+# Manual operations:
+#   - Pick up new default files while keeping edits: happens automatically.
+#   - Sentinel deleted / lost: just re-run this script (safe re-merge, no clobber).
+#   - Full reset INCLUDING user edits (DANGEROUS — wipes ~/.omp/agent):
+#       rm -rf ~/.omp/agent ~/.omp/.seeded-v1
+#
+# Note: symlinks inside the defaults tree are not handled (avoid them — keep the
+# tree self-contained). Regular files and directories only.
 set -euo pipefail
 
-DEFAULTS_SRC="/usr/local/share/omp-defaults/agent"
+DEFAULTS_SRC="${OMP_DEFAULTS_SRC:-/usr/local/share/omp-defaults/agent}"
 OMP_AGENT_DIR="${HOME}/.omp/agent"
 SENTINEL="${HOME}/.omp/.seeded-v1"
 
-# Validate the immutable source exists
+# --- Validate the immutable source ---
 if [[ ! -d "${DEFAULTS_SRC}" ]]; then
   echo "seed-omp-home.sh: ERROR — defaults source not found at ${DEFAULTS_SRC}" >&2
   echo "seed-omp-home.sh: The image may not have been built correctly. Cannot seed." >&2
   exit 1
 fi
-
-# Check if source has actual content (not just empty dirs from Dockerfile RUN mkdir)
 if [[ ! -f "${DEFAULTS_SRC}/config.yml" ]]; then
   echo "seed-omp-home.sh: ERROR — ${DEFAULTS_SRC}/config.yml missing from image defaults" >&2
   exit 1
 fi
 
-# Idempotency check — skip if already seeded
+# Content hash of the defaults tree: relative paths (location-independent),
+# covers file names and contents. xargs -r prevents a hang if the tree were
+# ever empty (can't happen — config.yml is required — but stay correct).
+compute_source_hash() {
+  ( cd "${DEFAULTS_SRC}" && find . -type f -print0 | sort -z | xargs -0 -r sha256sum ) \
+    | sha256sum | awk '{print $1}'
+}
+
+SOURCE_HASH="$(compute_source_hash)"
+STORED_HASH=""
 if [[ -f "${SENTINEL}" ]]; then
-  echo "seed-omp-home.sh: volume already seeded (sentinel ${SENTINEL} exists), skipping"
-  exit 0
+  STORED_HASH="$(cat "${SENTINEL}" 2>/dev/null || true)"
 fi
 
-# First boot — seed defaults
-echo "seed-omp-home.sh: seeding omp defaults from ${DEFAULTS_SRC} to ${OMP_AGENT_DIR}..."
-mkdir -p "${OMP_AGENT_DIR}"
-cp -r "${DEFAULTS_SRC}/." "${OMP_AGENT_DIR}/"
+# Fast path: already seeded AND source unchanged. Still verify the target is
+# intact — a sentinel without a target (deleted/corrupted) must re-merge, not skip.
+if [[ -n "${STORED_HASH}" && "${STORED_HASH}" == "${SOURCE_HASH}" ]]; then
+  if [[ -f "${OMP_AGENT_DIR}/config.yml" ]]; then
+    echo "seed-omp-home.sh: volume already seeded, defaults unchanged (hash ${STORED_HASH:0:12}…), skipping"
+    exit 0
+  fi
+  echo "seed-omp-home.sh: WARNING — sentinel present but target incomplete; re-merging defaults"
+fi
 
-# Create sentinel AFTER successful copy only
-touch "${SENTINEL}"
-echo "seed-omp-home.sh: seeding complete — sentinel created at ${SENTINEL}"
+# --- Merge: create missing dirs/files, never overwrite existing ---
+mkdir -p "${OMP_AGENT_DIR}"
+
+added=0
+
+# Directories first (preserves empty scaffolding dirs from the defaults)
+while IFS= read -r -d '' d; do
+  rel="${d#./}"
+  mkdir -p "${OMP_AGENT_DIR}/${rel}"
+done < <(cd "${DEFAULTS_SRC}" && find . -mindepth 1 -type d -print0 | sort -z)
+
+# Then files, with explicit per-file skip semantics
+while IFS= read -r -d '' f; do
+  rel="${f#./}"
+  if [[ ! -e "${OMP_AGENT_DIR}/${rel}" ]]; then
+    mkdir -p "$(dirname "${OMP_AGENT_DIR}/${rel}")"
+    cp -p "${DEFAULTS_SRC}/${rel}" "${OMP_AGENT_DIR}/${rel}"
+    added=$((added + 1))
+    echo "seed-omp-home.sh: added ${rel}"
+  fi
+done < <(cd "${DEFAULTS_SRC}" && find . -type f -print0 | sort -z)
+
+# Record the source hash only after a successful merge
+printf '%s\n' "${SOURCE_HASH}" > "${SENTINEL}"
+
+if [[ -z "${STORED_HASH}" ]]; then
+  echo "seed-omp-home.sh: first-boot seed complete — ${added} file(s) added, sentinel written at ${SENTINEL}"
+else
+  echo "seed-omp-home.sh: re-merge complete — ${added} new file(s) added, existing files untouched, sentinel updated"
+fi

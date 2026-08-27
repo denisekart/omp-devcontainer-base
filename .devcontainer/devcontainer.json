@@ -75,5 +75,5 @@
 
   "postCreateCommand": "chown -R vscode:vscode /home/vscode/.omp /home/vscode/.hindsight /home/vscode/.ssh /home/vscode/.config/gh /home/vscode/.persisted-git /home/vscode/.zsh_history_vol /home/vscode/.local/share/pnpm /home/vscode/.nuget /home/vscode/.cache/uv 2>/dev/null || true && bash /usr/local/share/omp-scripts/link-gitconfig.sh && bash /usr/local/share/omp-scripts/seed-omp-home.sh && bash /usr/local/share/omp-scripts/install-omp-plugins.sh && bash /usr/local/share/omp-scripts/bootstrap.sh",
 
-  "postStartCommand": "tmux new-session -d -s hindsight 'while true; do bash /usr/local/share/omp-scripts/hindsight-supervisor.sh; echo \"supervisor exited, restarting in 5s...\"; sleep 5; done'"
+  "postStartCommand": "tmux has-session -t hindsight 2>/dev/null || tmux new-session -d -s hindsight 'bash /usr/local/share/omp-scripts/hindsight-supervisor.sh'"
 }

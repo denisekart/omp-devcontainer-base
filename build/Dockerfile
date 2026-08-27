@@ -28,6 +28,7 @@ RUN apt-get update && apt-get -y install --no-install-recommends \
     bat \
     unzip \
     procps \
+    util-linux \
     libxext6 \
     libxrender1 \
     libxtst6 \
