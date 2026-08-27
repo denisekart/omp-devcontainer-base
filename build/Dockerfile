@@ -2,7 +2,8 @@ FROM mcr.microsoft.com/devcontainers/base:bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV DOTNET_ROOT=/usr/share/dotnet
-ENV PATH=$PATH:$DOTNET_ROOT:/home/vscode/.dotnet/tools:/home/vscode/.local/bin:/usr/local/bin
+ENV BUN_INSTALL=/usr/local
+ENV PATH=$BUN_INSTALL/bin:$DOTNET_ROOT:/home/vscode/.dotnet/tools:/home/vscode/.local/bin:/usr/local/bin:$PATH
 
 # Install core packages and tooling
 RUN apt-get update && apt-get -y install --no-install-recommends \
@@ -94,10 +95,11 @@ RUN npm install -g npm@latest \
     && npm install -g typescript pnpm typescript-language-server svelte-language-server vscode-langservers-extracted bash-language-server
 
 # Install bun runtime
-RUN export BUN_INSTALL=/usr/local     && curl -fsSL https://bun.sh/install | bash
+RUN curl -fsSL https://bun.sh/install | bash
 
-# Install oh-my-pi globally using bun
-RUN bun install -g @oh-my-pi/pi-coding-agent
+# Install oh-my-pi globally using bun and create pi symlink
+RUN bun install -g @oh-my-pi/pi-coding-agent \
+    && ln -sf /usr/local/bin/omp /usr/local/bin/pi
 
 # Install Puppeteer apt dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -172,7 +174,8 @@ RUN mkdir -p ~/.zsh_history_dir \
     && printf '%s\n' 'alias cat="batcat"' >> ~/.zshrc \
     && printf '%s\n' 'alias oc="omp"' >> ~/.zshrc \
     && printf '%s\n' 'alias fd="fdfind"' >> ~/.zshrc \
-    && printf '%s\n' 'export PATH=$PATH:/home/vscode/.dotnet/tools:/home/vscode/.local/bin' >> ~/.zshrc \
+    && printf '%s\n' 'export BUN_INSTALL=/usr/local' >> ~/.zshrc \
+    && printf '%s\n' 'export PATH=$BUN_INSTALL/bin:$DOTNET_ROOT:/home/vscode/.dotnet/tools:/home/vscode/.local/bin:/usr/local/bin:$PATH' >> ~/.zshrc \
     && printf '%s\n' '' >> ~/.zshrc \
     && printf '%s\n' '# ── Prevent background job output from corrupting TUI displays ──────────' >> ~/.zshrc \
     && printf '%s\n' '# (omp, vim, htop, etc. all use alternate screen buffers; output' >> ~/.zshrc \
