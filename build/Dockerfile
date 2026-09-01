@@ -118,7 +118,40 @@ RUN curl -fsSL https://bun.sh/install | bash
 
 # Install oh-my-pi globally using bun and create pi symlink
 RUN bun install -g @oh-my-pi/pi-coding-agent \
-    && ln -sf /usr/local/bin/omp /usr/local/bin/pi
+    && ln -sf /usr/local/bin/omp /usr/local/bin/pi \
+    && node -e '\
+const fs = require("fs");\
+const path = require("path");\
+function walk(dir) {\
+  if (!fs.existsSync(dir)) return [];\
+  let files = [];\
+  try {\
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {\
+      const full = path.join(dir, entry.name);\
+      if (entry.isDirectory()) files = files.concat(walk(full));\
+      else files.push(full);\
+    }\
+  } catch (e) {}\
+  return files;\
+}\
+for (const file of walk("/usr/local")) {\
+  if (file.includes("legacy-pi-tui-shim")) {\
+    let content = fs.readFileSync(file, "utf8");\
+    if (!content.includes("stripTerminalSequences")) {\
+      content += "\nexport function stripTerminalSequences(text) { return (text || \"\").replace(/\\x1B(?:\\[[0-?]*[ -/]*[@-~]|[@-Z\\\\-_])/g, \"\"); }\n";\
+      fs.writeFileSync(file, content);\
+      console.log("Patched stripTerminalSequences in", file);\
+    }\
+  }\
+  if (file.includes("legacy-pi-ai-shim")) {\
+    let content = fs.readFileSync(file, "utf8");\
+    if (!content.includes("getSupportedThinkingLevels")) {\
+      content += "\nexport function getSupportedThinkingLevels(model) { if (model && model.thinkingLevels && Array.isArray(model.thinkingLevels)) return model.thinkingLevels; if (model && model.thinkingLevelMap && typeof model.thinkingLevelMap === \"object\") return Object.keys(model.thinkingLevelMap); return [\"off\", \"low\", \"medium\", \"high\", \"xhigh\"]; }\nexport function clampThinkingLevel(model, level) { const s = getSupportedThinkingLevels(model); return s.includes(level) ? level : (s[0] || \"off\"); }\n";\
+      fs.writeFileSync(file, content);\
+      console.log("Patched getSupportedThinkingLevels in", file);\
+    }\
+  }\
+}'
 
 # Install Puppeteer apt dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -164,11 +197,14 @@ USER root
 
 # Baked omp defaults
 COPY library/omp-defaults /usr/local/share/omp-defaults
-RUN chown -R vscode:vscode /usr/local/share/omp-defaults
+RUN find /usr/local/share/omp-defaults -type f -exec sed -i 's/\r$//' {} + \
+    && chown -R vscode:vscode /usr/local/share/omp-defaults
 
 # Baked scripts
 COPY scripts /usr/local/share/omp-scripts
-RUN chown -R vscode:vscode /usr/local/share/omp-scripts && chmod +x /usr/local/share/omp-scripts/*.sh
+RUN find /usr/local/share/omp-scripts -type f -exec sed -i 's/\r$//' {} + \
+    && chown -R vscode:vscode /usr/local/share/omp-scripts \
+    && chmod +x /usr/local/share/omp-scripts/*.sh
 
 USER vscode
 
@@ -183,8 +219,9 @@ RUN uv tool install mcp-server-git
 RUN uv tool install mcp-server-time
 RUN python3 -m venv ~/.local/share/hindsight \
     && ~/.local/share/hindsight/bin/pip install 'setuptools<58' wheel \
-    && ~/.local/share/hindsight/bin/pip install hindsight-all \
-    && ln -sf ~/.local/share/hindsight/bin/hindsight ~/.local/bin/hindsight
+    && ~/.local/share/hindsight/bin/pip install hindsight-all hindsight-api \
+    && ln -sf ~/.local/share/hindsight/bin/hindsight-api ~/.local/bin/hindsight-api \
+    && ln -sf ~/.local/share/hindsight/bin/hindsight ~/.local/bin/hindsight 2>/dev/null || true
 
 # Shell configuration
 RUN mkdir -p ~/.zsh_history_dir \

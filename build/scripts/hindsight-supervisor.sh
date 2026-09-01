@@ -30,7 +30,23 @@ PGDATA_DIR="${HINDSIGHT_DIR}/pgdata"
 LOG_FILE="${HINDSIGHT_DIR}/hindsight.log"
 LOCK_FILE="${HINDSIGHT_DIR}/supervisor.lock"
 HEALTH_URL="${HINDSIGHT_HEALTH_URL:-http://localhost:8888/health}"
-HINDSIGHT_BIN="${HINDSIGHT_BIN:-${HOME}/.local/share/hindsight/bin/hindsight}"
+
+# Locate the hindsight daemon binary
+if [[ -z "${HINDSIGHT_BIN:-}" ]]; then
+  for candidate in \
+    "${HOME}/.local/share/hindsight/bin/hindsight-api" \
+    "${HOME}/.local/share/hindsight/bin/hindsight" \
+    "${HOME}/.local/bin/hindsight-api" \
+    "${HOME}/.local/bin/hindsight" \
+    "$(command -v hindsight-api 2>/dev/null || true)" \
+    "$(command -v hindsight 2>/dev/null || true)"; do
+    if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+      HINDSIGHT_BIN="${candidate}"
+      break
+    fi
+  done
+  HINDSIGHT_BIN="${HINDSIGHT_BIN:-${HOME}/.local/share/hindsight/bin/hindsight-api}"
+fi
 
 # Liveness pattern: matches the running hindsight process's full command line
 # (its interpreter + this binary path). Deliberately the venv bin path so it
@@ -38,8 +54,8 @@ HINDSIGHT_BIN="${HINDSIGHT_BIN:-${HOME}/.local/share/hindsight/bin/hindsight}"
 HINDSIGHT_RUN_PATTERN="${HINDSIGHT_BIN}"
 
 POLL_SECS="${HINDSIGHT_POLL_SECS:-15}"
-STARTUP_TIMEOUT_SECS="${HINDSIGHT_STARTUP_TIMEOUT_SECS:-60}"
-RECOVERY_TIMEOUT_SECS="${HINDSIGHT_RECOVERY_TIMEOUT_SECS:-45}"
+STARTUP_TIMEOUT_SECS="${HINDSIGHT_STARTUP_TIMEOUT_SECS:-180}"
+RECOVERY_TIMEOUT_SECS="${HINDSIGHT_RECOVERY_TIMEOUT_SECS:-180}"
 MAX_LOG_BYTES="${HINDSIGHT_MAX_LOG_BYTES:-10485760}"    # 10 MiB
 HEALTH_TIMEOUT_SECS=5
 
@@ -127,8 +143,13 @@ start_hindsight() {
     log "hindsight already running — skipping start"
     return 0
   fi
-  log "starting hindsight"
-  HINDSIGHT_DATA_DIR="${PGDATA_DIR}" nohup "${HINDSIGHT_BIN}" >> "${LOG_FILE}" 2>&1 &
+  log "starting hindsight ($HINDSIGHT_BIN)"
+  local llm_key="${HINDSIGHT_API_LLM_API_KEY:-${OPENAI_API_KEY:-${ANTHROPIC_API_KEY:-devcontainer-local-key}}}"
+  HINDSIGHT_DATA_DIR="${PGDATA_DIR}" \
+  HINDSIGHT_API_LLM_API_KEY="${llm_key}" \
+  HINDSIGHT_API_PORT="8888" \
+  HINDSIGHT_API_HOST="0.0.0.0" \
+  nohup "${HINDSIGHT_BIN}" >> "${LOG_FILE}" 2>&1 &
   log "hindsight launched (PID $!)"
   return 0
 }

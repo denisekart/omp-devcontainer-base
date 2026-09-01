@@ -36,15 +36,9 @@ hindsight:
 # Plugin extensions (FULL array — in omp, arrays REPLACE not merge across config levels)
 # This exact list must be consistent with install-omp-plugins.sh and docs/plugins.md
 extensions:
-  - "pi-atelier"
   - "pi-loop-police"
   - "pi-lens"
   - "context-mode"
-  - "@narumitw/pi-btw"
-
-# TUI theme — pi-atelier provides the status rail and activity sidebar
-theme:
-  name: "pi-atelier"
 
 # Plan workflow artifacts
 plan:
