@@ -56,6 +56,7 @@ PLUGINS=(
   "pi-loop-police"
   "pi-lens"
   "context-mode"
+  "pi-simplify"
 )
 
 # Detect whether the CLI supports the plugin subcommand. If it doesn't (e.g.

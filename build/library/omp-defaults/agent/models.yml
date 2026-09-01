@@ -12,8 +12,8 @@ providers:
       - id: "qwen3.8-27b"
         name: "Qwen 3.8 (27B)"
         reasoning: true
-        input: ["text"]
-        contextWindow: 131072
+        input: ["text", "image"]
+        contextWindow: 200000
         maxTokens: 16384
         thinking:
           mode: effort
@@ -39,8 +39,8 @@ providers:
       - id: "qwen3-coder-4b"
         name: "Qwen3 Coder (4B)"
         reasoning: false
-        input: ["text"]
-        contextWindow: 32768
+        input: ["text", "image"]
+        contextWindow: 48000
         maxTokens: 8192
         compat:
           supportsReasoningEffort: false

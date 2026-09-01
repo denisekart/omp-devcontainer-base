@@ -2,6 +2,10 @@
 # Baked at /usr/local/share/omp-defaults/agent/config.yml
 # Seeded into ~/.omp/agent/config.yml on first boot (never overwritten on rebuild)
 
+defaultProvider: "litellm"
+defaultModel: "litellm/qwen3.8-27b"
+defaultSmallModel: "litellm/qwen3-coder-4b"
+
 # LSP Configuration
 # Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/lsp-config.md
 lsp:
@@ -30,11 +34,11 @@ hindsight:
   scoping: "per-project-tagged"
   autoRecall: true
   autoRetain: true
-  recallBudget: "mid"
+  recallBudget: "high"
   retainMode: "last-turn"
 
 # Plugin extensions (FULL array — in omp, arrays REPLACE not merge across config levels)
-# Global plugins (pi-loop-police, pi-lens, context-mode) are installed via install-omp-plugins.sh (omp plugin install)
+# Global plugins (pi-loop-police, pi-lens, context-mode, pi-simplify) are installed via install-omp-plugins.sh (omp plugin install)
 extensions: []
 
 # Plan workflow artifacts

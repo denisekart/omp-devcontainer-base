@@ -6,13 +6,14 @@ Pinned versions and integrity digests are stored in `plugins.lock.json` at the r
 
 ## Adopted Plugins
 
-These 3 plugins are installed globally by default via `omp plugin install` during container initialization (`install-omp-plugins.sh`).
+These 4 plugins are installed globally by default via `omp plugin install` during container initialization (`install-omp-plugins.sh`).
 
 | Plugin | npm | GitHub | Purpose | Satisfies |
 |--------|-----|--------|---------|-----------|
 | `pi-loop-police` | [npmjs.com/package/pi-loop-police](https://npmjs.com/package/pi-loop-police) | [github.com/sebaxzero/pi-loop-police](https://github.com/sebaxzero/pi-loop-police) | Detects and breaks infinite loops in real time | Self-correction / ralph-loop guardrail |
 | `pi-lens` | [npmjs.com/package/pi-lens](https://npmjs.com/package/pi-lens) | [github.com/apmantza/pi-lens](https://github.com/apmantza/pi-lens) | Real-time code feedback: LSP, linters, formatters, type-checking | Lens/context feedback; reinforces LSP integration |
 | `context-mode` | [npmjs.com/package/context-mode](https://npmjs.com/package/context-mode) | [github.com/mksglu/context-mode](https://github.com/mksglu/context-mode) | MCP plugin that saves up to 98% of context window | Context-mode request, directly |
+| `pi-simplify` | [npmjs.com/package/pi-simplify](https://npmjs.com/package/pi-simplify) | [github.com/can1357/oh-my-pi](https://github.com/can1357/oh-my-pi) | Code and output simplification, reducing noise and boilerplate | Output streamlining and simplification |
 
 To reinstall after removing the sentinel:
 ```bash

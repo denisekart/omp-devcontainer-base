@@ -4,7 +4,8 @@
 generic
 
 ## Active omp Profiles
-(none)
+- dotnet-aspire
+- svelte
 
 ## Profiles Location
 User-level core skills and agents are active from ~/.omp/agent/skills/ and ~/.omp/agent/agents/ (baked into the base image).

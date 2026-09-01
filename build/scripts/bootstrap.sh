@@ -107,10 +107,9 @@ fi
 # --- Map stack to profiles ---
 PROFILES=()
 case "$STACK" in
-  dotnet-aspire-svelte) PROFILES=("dotnet-aspire" "svelte") ;;
-  dotnet-only)          PROFILES=("dotnet-aspire") ;;
-  svelte-only)          PROFILES=("svelte") ;;
-  generic)              PROFILES=() ;;
+  dotnet-aspire-svelte|generic) PROFILES=("dotnet-aspire" "svelte") ;;
+  dotnet-only)                  PROFILES=("dotnet-aspire") ;;
+  svelte-only)                  PROFILES=("svelte") ;;
   *)
     echo "bootstrap.sh: unknown stack: $STACK (expected: dotnet-aspire-svelte | dotnet-only | svelte-only | generic)" >&2
     exit 1
@@ -198,13 +197,30 @@ providers:
 "
 write_if_absent ".omp/config.yml" "$OMP_CONFIG"
 
+# --- .omp/models.yml (workspace-level models configuration) ---
+USER_MODELS="${HOME}/.omp/agent/models.yml"
+DEFAULT_MODELS="/usr/local/share/omp-defaults/agent/models.yml"
+if [[ -e ".omp/models.yml" ]]; then
+  echo "bootstrap.sh: SKIP (exists): .omp/models.yml"
+else
+  if [[ -f "$USER_MODELS" ]]; then
+    mkdir -p .omp
+    cp -p "$USER_MODELS" ".omp/models.yml"
+    echo "bootstrap.sh: created: .omp/models.yml (copied from $USER_MODELS)"
+  elif [[ -f "$DEFAULT_MODELS" ]]; then
+    mkdir -p .omp
+    cp -p "$DEFAULT_MODELS" ".omp/models.yml"
+    echo "bootstrap.sh: created: .omp/models.yml (copied from $DEFAULT_MODELS)"
+  fi
+fi
+
 # --- .omp/mcp.json (project-level, stack-specific servers) ---
 # Core servers (git, fetch, time, etc.) are already in ~/.omp/agent/mcp.json.
 # Built with jq -n so the file is guaranteed valid JSON; aborts if jq fails.
 MCP_SCHEMA="https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json"
 MCP_JSON=""
 case "$STACK" in
-  dotnet-aspire-svelte|dotnet-only)
+  dotnet-aspire-svelte|dotnet-only|generic)
     MCP_JSON="$(jq -n --arg schema "$MCP_SCHEMA" '{
       "$schema": $schema,
       mcpServers: {
