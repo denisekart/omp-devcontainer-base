@@ -2,36 +2,62 @@
 # Seeded into ~/.omp/agent/models.yml
 # Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/models.md
 
-# To use a model:
-# 1. Define the provider and model here.
-# 2. Map the model to a role (smol, slow, plan, etc.) in ~/.omp/agent/config.yml.
-
 providers:
-  local:
+  litellm:
     api: openai-completions
-    baseUrl: "http://host.docker.internal:11434/v1"
-    apiKey: "none"
-    auth: none
+    baseUrl: "http://spark.orca-hue.ts.net:4000/v1"
+    apiKey: "anything"
     models:
-      qwen3-coder:7b:
-        id: "qwen3-coder:7b"
-      qwen3-coder:32b:
-        id: "qwen3-coder:32b"
-      deepseek-r1:70b:
-        id: "deepseek-r1:70b"
+      # --- Qwen 3.8 (27B) with Dynamic Thinking & Reasoning Levels ---
+      - id: "qwen3.8-27b"
+        name: "Qwen 3.8 (27B)"
+        reasoning: true
+        input: ["text"]
+        contextWindow: 131072
+        maxTokens: 16384
+        thinking:
+          mode: effort
+          minLevel: low
+          maxLevel: xhigh
+        compat:
+          thinkingFormat: "qwen-chat-template"
+          qwenTemplateReasoningEffort: true
+          supportsReasoningEffort: true
+          reasoningEffortMap:
+            minimal: "low"
+            low: "low"
+            medium: "medium"
+            high: "high"
+            xhigh: "high"
+          requiresReasoningContentForToolCalls: true
+          reasoningContentField: "reasoning_content"
+          extraBody:
+            chat_template_kwargs:
+              enable_thinking: true
 
-  # Example: Remote OpenAI
-  # openai:
+      # --- Qwen3 Coder (4B) Lightweight Model ---
+      - id: "qwen3-coder-4b"
+        name: "Qwen3 Coder (4B)"
+        reasoning: false
+        input: ["text"]
+        contextWindow: 32768
+        maxTokens: 8192
+        compat:
+          supportsReasoningEffort: false
+          extraBody:
+            chat_template_kwargs:
+              enable_thinking: false
+
+  # Optional local fallback provider via Ollama/vLLM
+  # local:
   #   api: openai-completions
-  #   apiKey: "sk-..."
+  #   baseUrl: "http://host.docker.internal:11434/v1"
+  #   apiKey: "none"
+  #   auth: none
   #   models:
-  #     gpt-4o:
-  #       id: "gpt-4o"
-
-  # Example: Remote Anthropic
-  # anthropic:
-  #   api: anthropic-messages
-  #   apiKey: "sk-ant-..."
-  #   models:
-  #     claude-3-5-sonnet:
-  #       id: "claude-3-5-sonnet-20241022"
+  #     - id: "qwen3-coder:7b"
+  #       name: "qwen3-coder:7b"
+  #     - id: "qwen3-coder:32b"
+  #       name: "qwen3-coder:32b"
+  #     - id: "deepseek-r1:70b"
+  #       name: "deepseek-r1:70b"

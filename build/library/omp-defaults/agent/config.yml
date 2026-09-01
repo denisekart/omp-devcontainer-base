@@ -34,11 +34,8 @@ hindsight:
   retainMode: "last-turn"
 
 # Plugin extensions (FULL array — in omp, arrays REPLACE not merge across config levels)
-# This exact list must be consistent with install-omp-plugins.sh and docs/plugins.md
-extensions:
-  - "pi-loop-police"
-  - "pi-lens"
-  - "context-mode"
+# Global plugins (pi-loop-police, pi-lens, context-mode) are installed via install-omp-plugins.sh (omp plugin install)
+extensions: []
 
 # Plan workflow artifacts
 plan:
@@ -49,12 +46,12 @@ plan:
 # Model Role Mapping
 # Assign models defined in models.yml to native omp roles.
 modelRoles:
-  default: "local/qwen3-coder:32b"
-  smol: "local/qwen3-coder:7b"
-  slow: "local/deepseek-r1:70b"
-  plan: "local/deepseek-r1:70b"
-  task: "local/qwen3-coder:32b"
-  memory: "local/qwen3-coder:7b" # Used for mnemopi extraction
+  default: "litellm/qwen3.8-27b"
+  smol: "litellm/qwen3-coder-4b"
+  slow: "litellm/qwen3.8-27b"
+  plan: "litellm/qwen3.8-27b"
+  task: "litellm/qwen3.8-27b"
+  memory: "litellm/qwen3-coder-4b" # Used for mnemopi extraction
 
 # Local Tiny-Model Providers (Task-specific)
 # Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/local-models.md

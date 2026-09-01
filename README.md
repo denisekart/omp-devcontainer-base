@@ -109,20 +109,50 @@ To add `oh-my-pi` support to any repository:
 
 The base image seeds default configurations into your user home directory:
 
--   **`~/.omp/agent/models.yml`**: Contains provider definitions. By default, it uses local models via Ollama.
+-   **`~/.omp/agent/models.yml`**: Contains provider definitions. By default, it connects to LiteLLM serving Qwen models with reasoning controls.
     ```yaml
     providers:
-      local:
+      litellm:
         api: openai-completions
-        baseUrl: "http://host.docker.internal:11434/v1"
-        auth: none
+        baseUrl: "http://spark.orca-hue.ts.net:4000/v1"
+        apiKey: "anything"
         models:
-          qwen3-coder:7b:
-            id: "qwen3-coder:7b"
-          qwen3-coder:32b:
-            id: "qwen3-coder:32b"
-          deepseek-r1:70b:
-            id: "deepseek-r1:70b"
+          - id: "qwen3.8-27b"
+            name: "Qwen 3.8 (27B)"
+            reasoning: true
+            input: ["text"]
+            contextWindow: 131072
+            maxTokens: 16384
+            thinking:
+              mode: effort
+              minLevel: low
+              maxLevel: xhigh
+            compat:
+              thinkingFormat: "qwen-chat-template"
+              qwenTemplateReasoningEffort: true
+              supportsReasoningEffort: true
+              reasoningEffortMap:
+                minimal: "low"
+                low: "low"
+                medium: "medium"
+                high: "high"
+                xhigh: "high"
+              requiresReasoningContentForToolCalls: true
+              reasoningContentField: "reasoning_content"
+              extraBody:
+                chat_template_kwargs:
+                  enable_thinking: true
+          - id: "qwen3-coder-4b"
+            name: "Qwen3 Coder (4B)"
+            reasoning: false
+            input: ["text"]
+            contextWindow: 32768
+            maxTokens: 8192
+            compat:
+              supportsReasoningEffort: false
+              extraBody:
+                chat_template_kwargs:
+                  enable_thinking: false
     ```
 -   **`~/.omp/agent/config.yml`**: Contains global role mappings and LSP settings.
 
@@ -147,12 +177,44 @@ To maintain consistency across team members or ensure your model setup lives dir
      litellm:
        api: openai-completions
        baseUrl: "http://spark.orca-hue.ts.net:4000/v1"
-       apiKey: "anything" # or your LiteLLM master key / auth token
+       apiKey: "anything"
        models:
-         qwen3.8-27b:
-           id: "qwen3.8-27b"
-         qwen3-coder-4b:
-           id: "qwen3-coder-4b"
+         - id: "qwen3.8-27b"
+           name: "Qwen 3.8 (27B)"
+           reasoning: true
+           input: ["text"]
+           contextWindow: 131072
+           maxTokens: 16384
+           thinking:
+             mode: effort
+             minLevel: low
+             maxLevel: xhigh
+           compat:
+             thinkingFormat: "qwen-chat-template"
+             qwenTemplateReasoningEffort: true
+             supportsReasoningEffort: true
+             reasoningEffortMap:
+               minimal: "low"
+               low: "low"
+               medium: "medium"
+               high: "high"
+               xhigh: "high"
+             requiresReasoningContentForToolCalls: true
+             reasoningContentField: "reasoning_content"
+             extraBody:
+               chat_template_kwargs:
+                 enable_thinking: true
+         - id: "qwen3-coder-4b"
+           name: "Qwen3 Coder (4B)"
+           reasoning: false
+           input: ["text"]
+           contextWindow: 32768
+           maxTokens: 8192
+           compat:
+             supportsReasoningEffort: false
+             extraBody:
+               chat_template_kwargs:
+                 enable_thinking: false
    ```
 
 3. **Map Roles in `.omp/config.yml`**:

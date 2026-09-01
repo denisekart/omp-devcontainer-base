@@ -6,7 +6,7 @@ Pinned versions and integrity digests are stored in `plugins.lock.json` at the r
 
 ## Adopted Plugins
 
-These 3 plugins are installed by default and wired into the `extensions:` array in `build/library/omp-defaults/agent/config.yml`.
+These 3 plugins are installed globally by default via `omp plugin install` during container initialization (`install-omp-plugins.sh`).
 
 | Plugin | npm | GitHub | Purpose | Satisfies |
 |--------|-----|--------|---------|-----------|

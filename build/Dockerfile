@@ -117,7 +117,7 @@ RUN npm install -g npm@latest \
 RUN curl -fsSL https://bun.sh/install | bash
 
 # Install oh-my-pi globally using bun and create pi symlink
-RUN bun install -g @oh-my-pi/pi-coding-agent \
+RUN bun install -g @oh-my-pi/pi-coding-agent@latest \
     && ln -sf /usr/local/bin/omp /usr/local/bin/pi \
     && node -e '\
 const fs = require("fs");\
