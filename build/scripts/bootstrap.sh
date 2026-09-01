@@ -177,6 +177,24 @@ OMP_CONFIG="# Project-level omp settings
 # Arrays REPLACE (not merge) — restate the full list if overriding extensions
 
 stack: ${STACK}
+
+# Model Role Mapping (optional project overrides)
+# modelRoles:
+#   default: \"litellm/qwen3.8-27b\"
+#   tiny: \"litellm/qwen3-coder-4b\"
+
+# Local Tiny-Model Providers (Task-specific project overrides)
+# Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/local-models.md
+# Set to 'online' to use role-mapped models, or specify a local tiny model (e.g. gemma-270m, lfm2-350m, lfm2-1.2b).
+# Minimum footprint options:
+#   - tinyModel (titles/sub-1B): \"gemma-270m\" (smallest footprint) or \"lfm2-350m\" (~212MB q4)
+#   - memoryModel / autoThinkingModel (1B-1.7B): \"lfm2-1.2b\" (recommended ~700MB q4)
+providers:
+  tinyModel: \"online\"        # e.g., \"gemma-270m\" or \"lfm2-350m\" for fast titles
+  memoryModel: \"online\"      # e.g., \"lfm2-1.2b\" for extraction/consolidation
+  autoThinkingModel: \"online\" # e.g., \"lfm2-1.2b\" for auto thinking difficulty
+  tinyModelDevice: \"cpu\"     # cpu (default), gpu, auto, metal, cuda, dml, wasm
+  tinyModelDtype: \"q4\"       # q4 (default), fp16
 "
 write_if_absent ".omp/config.yml" "$OMP_CONFIG"
 

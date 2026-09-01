@@ -229,6 +229,16 @@ To maintain consistency across team members or ensure your model setup lives dir
      plan: "litellm/qwen3.8-27b"
      task: "litellm/qwen3.8-27b"
      memory: "litellm/qwen3-coder-4b"
+     tiny: "litellm/qwen3-coder-4b"
+
+   # Local Tiny-Model Providers (Task-specific overrides)
+   # Set to 'online' to use role-mapped models, or specify a local tiny model.
+   providers:
+     tinyModel: "online"        # e.g., "gemma-270m" or "lfm2-350m" (minimum footprint)
+     memoryModel: "online"      # e.g., "lfm2-1.2b" (recommended) or "qwen2.5-1.5b"
+     autoThinkingModel: "online" # e.g., "lfm2-1.2b"
+     tinyModelDevice: "cpu"     # cpu (default), gpu, auto, metal, cuda, dml
+     tinyModelDtype: "q4"       # q4 (default), fp16
    ```
 
 4. **Verify Discovery**:
@@ -247,9 +257,29 @@ The following native roles are used by the `omp` harness and mapped to the LiteL
 | `slow` | Heavy reasoning model for complex architectural problems. | `local/deepseek-r1:70b` | `litellm/qwen3.8-27b` | Maximum capability available for complex problem-solving. |
 | `plan` | Architect model used for planning and generating `.omp/plans/`. | `local/deepseek-r1:70b` | `litellm/qwen3.8-27b` | Strong structured output and planning ability. |
 | `task` | Model used for executing delegated subagent tasks. | `local/qwen3-coder:32b` | `litellm/qwen3.8-27b` | Capable code generation for subagent work items. |
-| `memory` | Model used for Hindsight / memory extraction. | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Quick extraction of semantic observations into memory. |
+| `memory` | Model used for Hindsight / memory extraction (online fallback). | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Quick extraction of semantic observations into memory. |
+| `tiny` | Role fallback when task-specific `tinyModel` is set to `online`. | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Low latency fallback for session titles and background tasks. |
 
-### 4. Preferred Local Models (128GB GB10)
+### 4. Local Tiny Models (On-Device Inference)
+
+`oh-my-pi` supports running task-specific tiny models directly on device via `@huggingface/transformers` (Transformers.js ONNX runtime under Bun) on CPU without GPU requirements.
+
+The minimum footprint models are **pre-baked and shipped directly inside the devcontainer image**, eliminating first-run downloads and latency:
+
+| Task Setting | Purpose | Minimum Footprint Option | Shipped Local Options |
+| :--- | :--- | :--- | :--- |
+| `providers.tinyModel` | Fast session title generation | `gemma-270m` (~150MB) or `lfm2-350m` (~212MB q4) | `gemma-270m`, `lfm2-350m`, `qwen3-0.6b`, `qwen2.5-0.5b`, `lfm2-700m` |
+| `providers.memoryModel` | Mnemopi extraction & consolidation | `lfm2-1.2b` (~700MB q4) | `lfm2-1.2b` (recommended), `qwen2.5-1.5b`, `gemma-3-1b`, `llama3.2:3b` |
+| `providers.autoThinkingModel` | Dynamic thinking difficulty classification | `lfm2-1.2b` (~700MB q4) | `lfm2-1.2b` (recommended), `qwen2.5-1.5b`, `gemma-3-1b`, `llama3.2:3b` |
+
+#### Configuration:
+- Set any setting to `"online"` to use the online role mappings (`modelRoles.tiny`, `modelRoles.memory`, `modelRoles.smol`).
+- Set to a local model name (e.g. `tinyModel: "gemma-270m"`, `memoryModel: "lfm2-1.2b"`) to run on device.
+- Device and precision controls: `tinyModelDevice: "cpu"` (default) and `tinyModelDtype: "q4"` (default).
+
+*(Note: `qwen3-1.7b` ONNX currently has unsupported RotaryEmbedding cache updates in `onnxruntime-node`; use `lfm2-1.2b` or `qwen2.5-1.5b` instead.)*
+
+### 5. Preferred Local Models (128GB GB10)
 
 For high-end local setups (e.g., NVIDIA GB10 with 128GB VRAM), we recommend the following 2026-era models for optimal performance and reasoning:
 

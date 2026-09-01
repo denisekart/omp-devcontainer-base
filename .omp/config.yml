@@ -9,3 +9,17 @@ modelRoles:
   plan: "litellm/qwen3.8-27b"
   task: "litellm/qwen3.8-27b"
   memory: "litellm/qwen3-coder-4b"
+  tiny: "litellm/qwen3-coder-4b"
+
+# Local Tiny-Model Providers (Task-specific project overrides)
+# Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/local-models.md
+# Set to 'online' to use role-mapped models, or specify a local tiny model.
+# Minimum footprint options:
+#   - tinyModel: "gemma-270m" (smallest footprint) or "lfm2-350m" (balanced ~212MB q4)
+#   - memoryModel / autoThinkingModel: "lfm2-1.2b" (recommended ~700MB q4) or "qwen2.5-1.5b" / "gemma-3-1b"
+providers:
+  tinyModel: "online"        # e.g., "gemma-270m", "lfm2-350m", or "online"
+  memoryModel: "online"      # e.g., "lfm2-1.2b" or "online"
+  autoThinkingModel: "online" # e.g., "lfm2-1.2b" or "online"
+  tinyModelDevice: "cpu"     # cpu (default), gpu, auto, metal, cuda, dml, wasm
+  tinyModelDtype: "q4"       # q4 (default), fp16

@@ -3,6 +3,8 @@ FROM mcr.microsoft.com/devcontainers/base:bookworm
 ENV DEBIAN_FRONTEND=noninteractive
 ENV DOTNET_ROOT=/usr/share/dotnet
 ENV BUN_INSTALL=/usr/local
+ENV PI_TINY_DEVICE=cpu
+ENV PI_TINY_DTYPE=q4
 ENV PATH=$BUN_INSTALL/bin:$DOTNET_ROOT:/home/vscode/.dotnet/tools:/home/vscode/.local/bin:/usr/local/bin:$PATH
 
 # Install core packages and tooling
@@ -223,6 +225,20 @@ RUN python3 -m venv ~/.local/share/hindsight \
     && ln -sf ~/.local/share/hindsight/bin/hindsight-api ~/.local/bin/hindsight-api \
     && ln -sf ~/.local/share/hindsight/bin/hindsight ~/.local/bin/hindsight 2>/dev/null || true
 
+# Pre-download minimal footprint local tiny models (gemma-270m, lfm2-350m, lfm2-1.2b) for on-device inference
+RUN omp tiny-models download gemma-270m || true \
+    && omp tiny-models download lfm2-350m || true \
+    && omp tiny-models download lfm2-1.2b || true
+
+USER root
+# Ensure pre-downloaded tiny models are also captured in immutable image defaults
+RUN if [ -d /home/vscode/.omp/agent/cache ]; then \
+        mkdir -p /usr/local/share/omp-defaults/agent/cache \
+        && cp -rp /home/vscode/.omp/agent/cache/* /usr/local/share/omp-defaults/agent/cache/ 2>/dev/null || true \
+        && chown -R vscode:vscode /usr/local/share/omp-defaults; \
+    fi
+USER vscode
+
 # Shell configuration
 RUN mkdir -p ~/.zsh_history_dir \
     && printf '%s\n' 'export HISTFILE=~/.zsh_history_dir/.zsh_history' >> ~/.zshrc \
@@ -235,6 +251,8 @@ RUN mkdir -p ~/.zsh_history_dir \
     && printf '%s\n' 'alias fd="fdfind"' >> ~/.zshrc \
     && printf '%s\n' 'export BUN_INSTALL=/usr/local' >> ~/.zshrc \
     && printf '%s\n' 'export DOTNET_ROOT=/usr/share/dotnet' >> ~/.zshrc \
+    && printf '%s\n' 'export PI_TINY_DEVICE=cpu' >> ~/.zshrc \
+    && printf '%s\n' 'export PI_TINY_DTYPE=q4' >> ~/.zshrc \
     && printf '%s\n' 'export PATH=$BUN_INSTALL/bin:$DOTNET_ROOT:/home/vscode/.dotnet/tools:/home/vscode/.local/bin:/usr/local/bin:$PATH' >> ~/.zshrc \
     && printf '%s\n' '' >> ~/.zshrc \
     && printf '%s\n' '# ── Prevent background job output from corrupting TUI displays ──────────' >> ~/.zshrc \

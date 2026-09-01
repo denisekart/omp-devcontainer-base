@@ -51,16 +51,21 @@ modelRoles:
   slow: "litellm/qwen3.8-27b"
   plan: "litellm/qwen3.8-27b"
   task: "litellm/qwen3.8-27b"
-  memory: "litellm/qwen3-coder-4b" # Used for mnemopi extraction
+  memory: "litellm/qwen3-coder-4b" # Used for mnemopi extraction (online fallback)
+  tiny: "litellm/qwen3-coder-4b"   # Used for lightweight background tasks (online fallback)
 
 # Local Tiny-Model Providers (Task-specific)
 # Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/local-models.md
 # Set to 'online' to use the role-mapped models, or specify a local tiny model.
+# Minimum footprint options:
+#   - tinyModel (titles/sub-1B): "gemma-270m" (smallest footprint ~270M) or "lfm2-350m" (balanced ~212MB q4)
+#   - memoryModel / autoThinkingModel (1B-1.7B): "lfm2-1.2b" (recommended ~700MB q4) or "qwen2.5-1.5b" / "gemma-3-1b"
+# Note: qwen3-1.7b is currently unsupported by onnxruntime-node.
 providers:
-  tinyModel: "online"        # e.g., "qwen3-0.6b" for fast titles
-  memoryModel: "online"      # e.g., "qwen3-1.7b" for robust extraction
-  autoThinkingModel: "online"
-  tinyModelDevice: "cpu"     # cpu (default), gpu, auto, metal
+  tinyModel: "online"        # e.g., "gemma-270m" or "lfm2-350m" for fast titles
+  memoryModel: "online"      # e.g., "lfm2-1.2b" for robust extraction/consolidation
+  autoThinkingModel: "online" # e.g., "lfm2-1.2b" for auto-thinking difficulty
+  tinyModelDevice: "cpu"     # cpu (default), gpu, auto, metal, cuda, dml, wasm
   tinyModelDtype: "q4"       # q4 (default), fp16
 
 # Discovery paths

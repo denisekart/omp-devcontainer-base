@@ -38,10 +38,10 @@ if [[ ! -f "${DEFAULTS_SRC}/config.yml" ]]; then
 fi
 
 # Content hash of the defaults tree: relative paths (location-independent),
-# covers file names and contents. xargs -r prevents a hang if the tree were
-# ever empty (can't happen — config.yml is required — but stay correct).
+# covers file names and contents (excluding ./cache to avoid hashing binary models on every boot).
+# xargs -r prevents a hang if the tree were ever empty.
 compute_source_hash() {
-  ( cd "${DEFAULTS_SRC}" && find . -type f -print0 | sort -z | xargs -0 -r sha256sum ) \
+  ( cd "${DEFAULTS_SRC}" && find . -path './cache' -prune -o -type f -print0 | sort -z | xargs -0 -r sha256sum ) \
     | sha256sum | awk '{print $1}'
 }
 
