@@ -184,30 +184,64 @@ Project-level overrides can be placed in .omp/skills/.
 "
 write_if_absent "AGENTS.md" "$AGENTS_CONTENT"
 
-# --- .omp/config.yml ---
 OMP_CONFIG="# Project-level omp settings
-# Extends user-level ~/.omp/agent/config.yml
+# Mirrors user-level ~/.omp/agent/config.yml (baked defaults) — keep in sync.
 # Arrays REPLACE (not merge) — restate the full list if overriding extensions
 
 stack: ${STACK}
 
-# Model Role Mapping (optional project overrides)
-# modelRoles:
-#   default: \"litellm/qwen3.8-27b\"
-#   tiny: \"litellm/qwen3-coder-4b\"
+# Model Role Mapping
+#   qwen3.8-27b = primary (agentic reasoning; default/slow/plan)
+#   qwen3.6-35b = worker (35B-A3B MoE; delegated subagent tasks)
+#   qwen3-coder-4b = smol (background/utility tasks)
+modelRoles:
+  default: \"litellm/qwen3.8-27b\"
+  smol: \"litellm/qwen3-coder-4b\"
+  slow: \"litellm/qwen3.8-27b\"
+  plan: \"litellm/qwen3.8-27b\"
+  task: \"litellm/qwen3.6-35b\"     # Worker model: strong coder/specialist given detailed instructions
+  memory: \"litellm/qwen3-coder-4b\" # Used for mnemopi extraction (online fallback)
+  tiny: \"litellm/qwen3-coder-4b\"   # Used for lightweight background tasks (online fallback)
 
-# Local Tiny-Model Providers (Task-specific project overrides)
+# Retry / Fallback Chains (retry.fallbackChains)
+# Model-oriented keys: every role running qwen3.8-27b (default/slow/plan) falls
+# back to the qwen3.6-35b worker; every role running qwen3-coder-4b
+# (smol/memory/tiny) falls back to the worker too. The offline path for the
+# small online models is the on-device lfm2-1.2b (task-specific providers below).
+retry:
+  fallbackChains:
+    \"litellm/qwen3.8-27b\":
+      - \"litellm/qwen3.6-35b\"
+    \"litellm/qwen3-coder-4b\":
+      - \"litellm/qwen3.6-35b\"
+
+# Local Tiny-Model Providers (Task-specific)
 # Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/local-models.md
-# Set to 'online' to use role-mapped models, or specify a local tiny model (e.g. gemma-270m, lfm2-350m, lfm2-1.2b).
-# Minimum footprint options:
-#   - tinyModel (titles/sub-1B): \"gemma-270m\" (smallest footprint) or \"lfm2-350m\" (~212MB q4)
-#   - memoryModel / autoThinkingModel (1B-1.7B): \"lfm2-1.2b\" (recommended ~700MB q4)
+# Side tasks (titles, mnemopi extraction/consolidation, auto-thinking difficulty)
+# run on the baked-in local model lfm2-1.2b — most capable of the models
+# pre-downloaded into the image (gemma-270m, lfm2-350m, lfm2-1.2b) and the
+# fastest warm load (~0.4s). Offline-resilient path for the small online
+# models; set an entry back to \"online\" to route through the online role model.
 providers:
-  tinyModel: \"online\"        # e.g., \"gemma-270m\" or \"lfm2-350m\" for fast titles
-  memoryModel: \"online\"      # e.g., \"lfm2-1.2b\" for extraction/consolidation
-  autoThinkingModel: \"online\" # e.g., \"lfm2-1.2b\" for auto thinking difficulty
+  tinyModel: \"lfm2-1.2b\"          # e.g., \"gemma-270m\" or \"lfm2-350m\" for faster titles
+  memoryModel: \"lfm2-1.2b\"        # recommended local memory model
+  autoThinkingModel: \"lfm2-1.2b\"  # dynamic thinking-difficulty classifier
   tinyModelDevice: \"cpu\"     # cpu (default), gpu, auto, metal, cuda, dml, wasm
   tinyModelDtype: \"q4\"       # q4 (default), fp16
+
+# Subagent Concurrency & Parallelism
+# Engine limits: qwen3.8-27b serves --max-num-seqs 2 (big-model slots); the
+# qwen3.6-35b worker serves --max-num-seqs 6 (vLLM queues overflow beyond 6).
+subagents:
+  globalConcurrencyLimit: 20    # Combined limit (2 big + 18 small sessions)
+  maxSubagentDepth: 2           # Prevent unbounded nesting
+  forceTopLevelAsync: true      # Background tasks by default
+  parallel:
+    concurrency: 2              # Max parallel slots for 'big' model tasks (qwen3.8 --max-num-seqs 2)
+
+task:
+  isolation:
+    mode: \"auto\"
 "
 write_if_absent ".omp/config.yml" "$OMP_CONFIG"
 

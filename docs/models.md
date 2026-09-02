@@ -29,11 +29,13 @@ The base image seeds default configurations into your user home directory:
         baseUrl: "http://spark.orca-hue.ts.net:4000/v1"
         apiKey: "anything"
         models:
+          # --- Qwen 3.8 (27B) with Dynamic Thinking & Reasoning Levels ---
+          # vLLM backend: --max-model-len 230000 --max-num-seqs 2
           - id: "qwen3.8-27b"
             name: "Qwen 3.8 (27B)"
             reasoning: true
             input: ["text", "image"]
-            contextWindow: 200000
+            contextWindow: 230000
             maxTokens: 16384
             thinking:
               mode: effort
@@ -70,6 +72,56 @@ The base image seeds default configurations into your user home directory:
                   repetition_penalty: 1.0
                   chat_template_kwargs:
                     enable_thinking: true
+
+          # --- Qwen 3.6 (35B-A3B) Worker Model (HauhauCS Uncensored, NVFP4) ---
+          # Multimodal MoE worker: 35B total / 3B active. Mapped to the `task`
+          # role (subagent workers). vLLM backend: --max-model-len 100000
+          # --max-num-seqs 6. Sampling per the Qwen3.6 model card;
+          # preserve_thinking keeps historical thinking traces (agent scenarios).
+          - id: "qwen3.6-35b"
+            name: "Qwen 3.6 (35B-A3B) Worker"
+            reasoning: true
+            input: ["text", "image"]
+            contextWindow: 100000
+            maxTokens: 32768
+            thinking:
+              mode: effort
+              minLevel: low
+              maxLevel: xhigh
+            compat:
+              thinkingFormat: "qwen-chat-template"
+              qwenTemplateReasoningEffort: true
+              supportsReasoningEffort: true
+              reasoningEffortMap:
+                minimal: "low"
+                low: "low"
+                medium: "medium"
+                high: "high"
+                xhigh: "high"
+              requiresReasoningContentForToolCalls: true
+              reasoningContentField: "reasoning_content"
+              extraBody:
+                temperature: 0.7
+                top_p: 0.80
+                top_k: 20
+                min_p: 0.0
+                presence_penalty: 1.5
+                repetition_penalty: 1.0
+                chat_template_kwargs:
+                  enable_thinking: false
+              whenThinking:
+                extraBody:
+                  temperature: 0.6
+                  top_p: 0.95
+                  top_k: 20
+                  min_p: 0.0
+                  presence_penalty: 0.0
+                  repetition_penalty: 1.0
+                  chat_template_kwargs:
+                    enable_thinking: true
+                    preserve_thinking: true
+
+          # --- Qwen3 Coder (4B) Lightweight Model ---
           - id: "qwen3-coder-4b"
             name: "Qwen3 Coder (4B)"
             reasoning: false
@@ -92,7 +144,7 @@ The base image seeds default configurations into your user home directory:
 
 ### 2. Repository-Level Configuration (Project Level)
 
-To maintain consistency across team members or ensure your model setup lives directly in version control rather than user-specific directories, configure models at the repository level inside the `.omp/` folder of your project root.
+To maintain consistency across team members or ensure your model setup lives directly in version control rather than user-specific directories, configure models at the repository level inside the `.omp/` folder of your project root. The project-level `.omp/` configuration in this image **mirrors the user-level configuration** so both stay in sync.
 
 #### Setup Instructions for a Freshly Initialized Repository:
 
@@ -106,7 +158,7 @@ To maintain consistency across team members or ensure your model setup lives dir
    Create `.omp/models.yml` in your repository root pointing to your LiteLLM instance (or any OpenAI-compatible gateway such as `http://spark.orca-hue.ts.net:4000/v1`):
 
    ```yaml
-   # .omp/models.yml
+   # .omp/models.yml — identical to the user-level models.yml; see section 1.
    providers:
      litellm:
        api: openai-completions
@@ -117,7 +169,7 @@ To maintain consistency across team members or ensure your model setup lives dir
            name: "Qwen 3.8 (27B)"
            reasoning: true
            input: ["text", "image"]
-           contextWindow: 200000
+           contextWindow: 230000
            maxTokens: 16384
            thinking:
              mode: effort
@@ -154,6 +206,48 @@ To maintain consistency across team members or ensure your model setup lives dir
                  repetition_penalty: 1.0
                  chat_template_kwargs:
                    enable_thinking: true
+         - id: "qwen3.6-35b"
+           name: "Qwen 3.6 (35B-A3B) Worker"
+           reasoning: true
+           input: ["text", "image"]
+           contextWindow: 100000
+           maxTokens: 32768
+           thinking:
+             mode: effort
+             minLevel: low
+             maxLevel: xhigh
+           compat:
+             thinkingFormat: "qwen-chat-template"
+             qwenTemplateReasoningEffort: true
+             supportsReasoningEffort: true
+             reasoningEffortMap:
+               minimal: "low"
+               low: "low"
+               medium: "medium"
+               high: "high"
+               xhigh: "high"
+             requiresReasoningContentForToolCalls: true
+             reasoningContentField: "reasoning_content"
+             extraBody:
+               temperature: 0.7
+               top_p: 0.80
+               top_k: 20
+               min_p: 0.0
+               presence_penalty: 1.5
+               repetition_penalty: 1.0
+               chat_template_kwargs:
+                 enable_thinking: false
+             whenThinking:
+               extraBody:
+                 temperature: 0.6
+                 top_p: 0.95
+                 top_k: 20
+                 min_p: 0.0
+                 presence_penalty: 0.0
+                 repetition_penalty: 1.0
+                 chat_template_kwargs:
+                   enable_thinking: true
+                   preserve_thinking: true
          - id: "qwen3-coder-4b"
            name: "Qwen3 Coder (4B)"
            reasoning: false
@@ -183,18 +277,37 @@ To maintain consistency across team members or ensure your model setup lives dir
      smol: "litellm/qwen3-coder-4b"
      slow: "litellm/qwen3.8-27b"
      plan: "litellm/qwen3.8-27b"
-     task: "litellm/qwen3.8-27b"
+     task: "litellm/qwen3.6-35b"     # Worker model: strong coder/specialist given detailed instructions
      memory: "litellm/qwen3-coder-4b"
      tiny: "litellm/qwen3-coder-4b"
 
+   # Retry / Fallback Chains — model-oriented keys apply to every role running
+   # that model (default/slow/plan → worker; smol/memory/tiny → worker).
+   retry:
+     fallbackChains:
+       "litellm/qwen3.8-27b":
+         - "litellm/qwen3.6-35b"
+       "litellm/qwen3-coder-4b":
+         - "litellm/qwen3.6-35b"
+
    # Local Tiny-Model Providers (Task-specific overrides)
-   # Set to 'online' to use role-mapped models, or specify a local tiny model.
+   # Side tasks run on the baked-in local model lfm2-1.2b (offline-resilient
+   # fallback for the small online models). "online" routes through the
+   # role-mapped online model instead.
    providers:
-     tinyModel: "online"        # e.g., "gemma-270m" or "lfm2-350m" (minimum footprint)
-     memoryModel: "online"      # e.g., "lfm2-1.2b" (recommended) or "qwen2.5-1.5b"
-     autoThinkingModel: "online" # e.g., "lfm2-1.2b"
+     tinyModel: "lfm2-1.2b"
+     memoryModel: "lfm2-1.2b"
+     autoThinkingModel: "lfm2-1.2b"
      tinyModelDevice: "cpu"     # cpu (default), gpu, auto, metal, cuda, dml
      tinyModelDtype: "q4"       # q4 (default), fp16
+
+   # Subagent Concurrency & Parallelism
+   subagents:
+     globalConcurrencyLimit: 20    # Combined limit (2 big + 18 small sessions)
+     maxSubagentDepth: 2
+     forceTopLevelAsync: true
+     parallel:
+       concurrency: 2              # 'big' model slots (qwen3.8 --max-num-seqs 2)
    ```
 
 4. **Verify Discovery**:
@@ -208,30 +321,33 @@ The following native roles are used by the `omp` harness and mapped to the LiteL
 
 | Role | Purpose | Default Local Mapping | LiteLLM Setup Mapping | Rationale |
 | :--- | :--- | :--- | :--- | :--- |
-| `default` | Primary model for interactive chat and coding. | `local/qwen3-coder:32b` | `litellm/qwen3.8-27b` | High capability for general instruction and code generation. |
-| `smol` | Fast, lightweight model for background tasks (summaries, titles). | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Fast response times and low latency for utility tasks. |
-| `slow` | Heavy reasoning model for complex architectural problems. | `local/deepseek-r1:70b` | `litellm/qwen3.8-27b` | Maximum capability available for complex problem-solving. |
-| `plan` | Architect model used for planning and generating `.omp/plans/`. | `local/deepseek-r1:70b` | `litellm/qwen3.8-27b` | Strong structured output and planning ability. |
-| `task` | Model used for executing delegated subagent tasks. | `local/qwen3-coder:32b` | `litellm/qwen3.8-27b` | Capable code generation for subagent work items. |
-| `memory` | Model used for Hindsight / memory extraction (online fallback). | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Quick extraction of semantic observations into memory. |
-| `tiny` | Role fallback when task-specific `tinyModel` is set to `online`. | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Low latency fallback for session titles and background tasks. |
+| `default` | Primary model for interactive chat and coding. | `local/qwen3-coder:32b` | `litellm/qwen3.8-27b` | High capability for general instruction, agentic reasoning and code generation. Falls back to `litellm/qwen3.6-35b` (retry chain). |
+| `smol` | Fast, lightweight model for background tasks (summaries, titles). | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Fast response times and low latency for utility tasks. Falls back to `litellm/qwen3.6-35b` (retry chain). |
+| `slow` | Heavy reasoning model for complex architectural problems. | `local/deepseek-r1:70b` | `litellm/qwen3.8-27b` | Maximum capability available for complex problem-solving. Falls back to `litellm/qwen3.6-35b` (retry chain). |
+| `plan` | Architect model used for planning and generating `.omp/plans/`. | `local/deepseek-r1:70b` | `litellm/qwen3.8-27b` | Strong structured output and planning ability. Falls back to `litellm/qwen3.6-35b` (retry chain). |
+| `task` | Model used for executing delegated subagent tasks. | `local/qwen3-coder:32b` | `litellm/qwen3.6-35b` | **Worker model**: 35B-A3B MoE (3B active) — a very capable coder/specialist given detailed instructions; slightly less agentic reasoning than Qwen 3.8. Serves `--max-num-seqs 6` for parallel subagents. |
+| `memory` | Model used for Hindsight / memory extraction (online fallback). | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Quick extraction of semantic observations into memory. Falls back to `litellm/qwen3.6-35b` (retry chain). |
+| `tiny` | Role fallback when task-specific `tinyModel` is set to `online`. | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Low latency fallback for session titles and background tasks. Falls back to `litellm/qwen3.6-35b` (retry chain). |
+
+**Fallback chains (`retry.fallbackChains`)**: model-oriented keys apply whenever that model is active, regardless of role. The baked defaults chain `litellm/qwen3.8-27b → litellm/qwen3.6-35b` and `litellm/qwen3-coder-4b → litellm/qwen3.6-35b`, so every role backed by the Qwen 3.8 model (or the 4B smol model) automatically retries on the Qwen 3.6 worker after provider errors. The true offline path for the small online models is the on-device `lfm2-1.2b` local model (next section).
 
 ### 4. Local Tiny Models (On-Device Inference)
 
 `oh-my-pi` supports running task-specific tiny models directly on device via `@huggingface/transformers` (Transformers.js ONNX runtime under Bun) on CPU without GPU requirements.
 
-The minimum footprint models are **pre-baked and shipped directly inside the devcontainer image**, eliminating first-run downloads and latency:
+The minimum footprint models are **pre-baked and shipped directly inside the devcontainer image** (via `omp tiny-models download` in the Dockerfile), eliminating first-run downloads and latency: **`gemma-270m`, `lfm2-350m`, `lfm2-1.2b`**.
 
 | Task Setting | Purpose | Minimum Footprint Option | Shipped Local Options |
 | :--- | :--- | :--- | :--- |
-| `providers.tinyModel` | Fast session title generation | `gemma-270m` (~150MB) or `lfm2-350m` (~212MB q4) | `gemma-270m`, `lfm2-350m`, `qwen3-0.6b`, `qwen2.5-0.5b`, `lfm2-700m` |
-| `providers.memoryModel` | Mnemopi extraction & consolidation | `lfm2-1.2b` (~700MB q4) | `lfm2-1.2b` (recommended), `qwen2.5-1.5b`, `gemma-3-1b`, `llama3.2:3b` |
-| `providers.autoThinkingModel` | Dynamic thinking difficulty classification | `lfm2-1.2b` (~700MB q4) | `lfm2-1.2b` (recommended), `qwen2.5-1.5b`, `gemma-3-1b`, `llama3.2:3b` |
+| `providers.tinyModel` | Fast session title generation | `gemma-270m` (~150MB) or `lfm2-350m` (~212MB q4) | `gemma-270m`, `lfm2-350m`, `lfm2-1.2b` (baked) + `qwen3-0.6b`, `qwen2.5-0.5b`, `lfm2-700m` (downloadable) |
+| `providers.memoryModel` | Mnemopi extraction & consolidation | `lfm2-1.2b` (~700MB q4) | `lfm2-1.2b` (baked, recommended) + `qwen2.5-1.5b`, `gemma-3-1b`, `llama3.2:3b` (downloadable) |
+| `providers.autoThinkingModel` | Dynamic thinking difficulty classification | `lfm2-1.2b` (~700MB q4) | `lfm2-1.2b` (baked, recommended) + `qwen2.5-1.5b`, `gemma-3-1b`, `llama3.2:3b` (downloadable) |
 
 #### Configuration:
 - Set any setting to `"online"` to use the online role mappings (`modelRoles.tiny`, `modelRoles.memory`, `modelRoles.smol`).
-- Set to a local model name (e.g. `tinyModel: "gemma-270m"`, `memoryModel: "lfm2-1.2b"`) to run on device.
+- Set to a local model name (e.g. `tinyModel: "lfm2-350m"`, `memoryModel: "lfm2-1.2b"`) to run on device.
 - Device and precision controls: `tinyModelDevice: "cpu"` (default) and `tinyModelDtype: "q4"` (default).
+- **Baked default: `lfm2-1.2b` for all three task providers** — the most capable of the pre-baked local models and the fastest warm load (~0.4s). This makes the small online models (smol / `qwen3-coder-4b`) effectively fall back to the local model: titles, memory extraction/consolidation and auto-thinking run fully on-device with no network dependency.
 
 *(Note: `qwen3-1.7b` ONNX currently has unsupported RotaryEmbedding cache updates in `onnxruntime-node`; use `lfm2-1.2b` or `qwen2.5-1.5b` instead.)*
 
@@ -247,11 +363,16 @@ For high-end local setups (e.g., NVIDIA GB10 with 128GB VRAM), we recommend the 
 
 ### 5. Managing Parallelism
 
-Running multiple subagents concurrently can quickly exhaust VRAM. The base image is configured to balance high-concurrency with stability by default:
+Running multiple subagents concurrently can quickly exhaust VRAM. The base image is configured to balance high-concurrency with stability by default. The engine-level concurrency caps come from the vLLM `--max-num-seqs` flags:
+
+- **qwen3.8-27b** (big models: `default`/`slow`/`plan`): `--max-model-len 230000`, `--max-num-seqs 2`, `--max-num-batched-tokens 32768`
+- **qwen3.6-35b worker** (`task` role): `--max-model-len 100000`, `--max-num-seqs 6`, `--max-num-batched-tokens 8192`
+
+The harness limits are tuned to match:
 
 - **Global Limit**: `globalConcurrencyLimit: 20` (Total simultaneous subagent sessions).
-- **Big Model Slots**: `parallel.concurrency: 4` (Recommended max for `slow`/`plan` models).
-- **Small Model Slots**: `16` (Remaining slots for `smol`/`task` models).
+- **Big Model Slots**: `parallel.concurrency: 2` (matches qwen3.8 `--max-num-seqs 2`).
+- **Small Model Slots**: `18` (remaining slots for `smol`/`task` models; the worker engine caps concurrency at 6 sequences and queues the overflow).
 
 To adjust these limits, edit `~/.omp/agent/config.yml`:
 
@@ -259,5 +380,5 @@ To adjust these limits, edit `~/.omp/agent/config.yml`:
 subagents:
   globalConcurrencyLimit: 20
   parallel:
-    concurrency: 4
+    concurrency: 2
 ```
