@@ -1,8 +1,8 @@
 # omp Plugin Decisions
 
 This document records the plugin adoption decisions for this devcontainer base image.
-Plugins are installed via `.devcontainer/scripts/install-omp-plugins.sh` on first container create.
-Pinned versions and integrity digests are stored in `plugins.lock.json` at the repo root.
+Plugins are installed on first container create by `/usr/local/share/omp-scripts/install-omp-plugins.sh` (source: `build/scripts/install-omp-plugins.sh`).
+Pinned versions and integrity digests are captured at install time into `~/.omp/plugins.lock.json` on the persistent omp-home volume (see `LOCKFILE` in `build/scripts/install-omp-plugins.sh`).
 
 ## Adopted Plugins
 

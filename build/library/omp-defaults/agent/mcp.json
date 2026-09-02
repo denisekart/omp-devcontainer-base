@@ -2,20 +2,16 @@
   "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
   "mcpServers": {
     "git": {
-      "command": "uvx",
-      "args": ["mcp-server-git"]
+      "command": "mcp-server-git"
     },
     "fetch": {
-      "command": "uvx",
-      "args": ["mcp-server-fetch"]
+      "command": "mcp-server-fetch"
     },
     "time": {
-      "command": "uvx",
-      "args": ["mcp-server-time"]
+      "command": "mcp-server-time"
     },
     "docker": {
-      "command": "uvx",
-      "args": ["mcp-server-docker"]
+      "command": "mcp-server-docker"
     },
     "puppeteer": {
       "command": "npx",

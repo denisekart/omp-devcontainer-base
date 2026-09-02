@@ -224,7 +224,7 @@ case "$STACK" in
     MCP_JSON="$(jq -n --arg schema "$MCP_SCHEMA" '{
       "$schema": $schema,
       mcpServers: {
-        docker:    {command: "uvx",    args: ["mcp-server-docker"]},
+        docker:    {command: "mcp-server-docker"},
         aspire:    {command: "aspire", args: ["agent", "mcp"]},
         shadcn:    {command: "npx",    args: ["-y", "shadcn@latest", "mcp"]},
         puppeteer: {command: "npx",    args: ["-y", "@modelcontextprotocol/server-puppeteer"]}

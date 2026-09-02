@@ -115,7 +115,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 
 # Update npm and install global npm tools
 RUN npm install -g npm@latest \
-    && npm install -g typescript pnpm typescript-language-server svelte-language-server vscode-langservers-extracted bash-language-server
+    && npm install -g typescript pnpm typescript-language-server svelte-language-server vscode-langservers-extracted bash-language-server \
+    && npm cache clean --force
 
 # Install bun runtime
 RUN curl -fsSL https://bun.sh/install | bash
@@ -225,7 +226,8 @@ RUN python3 -m venv ~/.local/share/hindsight \
     && ~/.local/share/hindsight/bin/pip install 'setuptools<58' wheel \
     && ~/.local/share/hindsight/bin/pip install hindsight-all hindsight-api \
     && ln -sf ~/.local/share/hindsight/bin/hindsight-api ~/.local/bin/hindsight-api \
-    && ln -sf ~/.local/share/hindsight/bin/hindsight ~/.local/bin/hindsight 2>/dev/null || true
+    && ln -sf ~/.local/share/hindsight/bin/hindsight ~/.local/bin/hindsight 2>/dev/null || true \
+    && rm -rf /home/vscode/.cache/uv /home/vscode/.cache/pip
 
 # Pre-download minimal footprint local tiny models (gemma-270m, lfm2-350m, lfm2-1.2b) for on-device inference
 RUN omp tiny-models download gemma-270m || true \
@@ -242,8 +244,8 @@ RUN if [ -d /home/vscode/.omp/agent/cache ]; then \
 USER vscode
 
 # Shell configuration
-RUN mkdir -p ~/.zsh_history_dir \
-    && printf '%s\n' 'export HISTFILE=~/.zsh_history_dir/.zsh_history' >> ~/.zshrc \
+RUN mkdir -p ~/.zsh_history_vol \
+    && printf '%s\n' 'export HISTFILE=~/.zsh_history_vol/.zsh_history' >> ~/.zshrc \
     && printf '%s\n' 'export HISTSIZE=10000' >> ~/.zshrc \
     && printf '%s\n' 'export SAVEHIST=10000' >> ~/.zshrc \
     && printf '%s\n' 'eval "$(starship init zsh)"' >> ~/.zshrc \
@@ -278,7 +280,54 @@ RUN mkdir -p ~/.zsh_history_dir \
     && printf '%s\n' '}' >> ~/.zshrc
 
 # Configure tmux for agent use
-RUN printf '%s\n' 'set -g default-terminal "screen-256color"' >> ~/.tmux.conf \
+RUN printf '%s\n' '##### GENERAL ########################################################' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' 'set -g default-shell /usr/bin/zsh' >> ~/.tmux.conf \
+    && printf '%s\n' 'set -g default-command /usr/bin/zsh' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' '# Prefix' >> ~/.tmux.conf \
+    && printf '%s\n' 'unbind C-b' >> ~/.tmux.conf \
+    && printf '%s\n' 'set -g prefix C-Space' >> ~/.tmux.conf \
+    && printf '%s\n' 'bind C-Space send-prefix' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' '# Performance' >> ~/.tmux.conf \
+    && printf '%s\n' 'set -s escape-time 0' >> ~/.tmux.conf \
+    && printf '%s\n' 'set -g history-limit 100000' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' '# UI' >> ~/.tmux.conf \
     && printf '%s\n' 'set -g mouse on' >> ~/.tmux.conf \
+    && printf '%s\n' 'set -g status-position top' >> ~/.tmux.conf \
+    && printf '%s\n' 'set -g status-interval 5' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' '# Terminal / Colors' >> ~/.tmux.conf \
+    && printf '%s\n' 'set -g default-terminal "screen-256color"' >> ~/.tmux.conf \
+    && printf '%s\n' 'set -as terminal-features ",xterm-256color:RGB"' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' '# Numbering' >> ~/.tmux.conf \
     && printf '%s\n' 'set -g base-index 1' >> ~/.tmux.conf \
-    && printf '%s\n' 'set -g pane-base-index 1' >> ~/.tmux.conf
+    && printf '%s\n' 'setw -g pane-base-index 1' >> ~/.tmux.conf \
+    && printf '%s\n' 'set -g renumber-windows on' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' '# Reload config' >> ~/.tmux.conf \
+    && printf '%s\n' 'bind r source-file ~/.tmux.conf \; display-message "tmux config reloaded"' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' '##### PANES ##########################################################' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' 'bind Left  select-pane -L' >> ~/.tmux.conf \
+    && printf '%s\n' 'bind Down  select-pane -D' >> ~/.tmux.conf \
+    && printf '%s\n' 'bind Up    select-pane -U' >> ~/.tmux.conf \
+    && printf '%s\n' 'bind Right select-pane -R' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' '# Splits' >> ~/.tmux.conf \
+    && printf '%s\n' 'bind + split-window -h' >> ~/.tmux.conf \
+    && printf '%s\n' 'bind - split-window -v' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' '##### WINDOWS ########################################################' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' 'bind C-Left  previous-window' >> ~/.tmux.conf \
+    && printf '%s\n' 'bind C-Right next-window' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' 'bind c new-window' >> ~/.tmux.conf \
+    && printf '%s\n' 'bind x kill-window' >> ~/.tmux.conf \
+    && printf '%s\n' '' >> ~/.tmux.conf \
+    && printf '%s\n' "bind R command-prompt -I \"#W\" \"rename-window '%%'\"" >> ~/.tmux.conf
