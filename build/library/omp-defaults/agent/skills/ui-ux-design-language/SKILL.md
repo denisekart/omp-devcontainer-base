@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: ui-ux-design-language
 description: Enforces the ExpenseHub design system defined in docs/design-language.md — colour tokens, typography, spacing, component conventions, accessibility, and motion rules for all frontend work.

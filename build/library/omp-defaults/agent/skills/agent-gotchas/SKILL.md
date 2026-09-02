@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: agent-gotchas
 description: Common pitfalls and mistakes to avoid when generating or modifying .NET code.

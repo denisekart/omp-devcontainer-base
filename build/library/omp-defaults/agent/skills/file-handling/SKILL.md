@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: file-handling
 description: Best practices for file I/O, streaming, and large file processing in .NET.

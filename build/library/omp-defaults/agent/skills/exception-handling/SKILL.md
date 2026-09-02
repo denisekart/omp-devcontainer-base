@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: exception-handling
 description: Global error handling, ProblemDetails mapping, and resilience patterns in ASP.NET Core.

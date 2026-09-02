@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: performance-analyst
 description: Expertise in .NET performance tuning, allocation reduction, async optimization, type design, and database access patterns.

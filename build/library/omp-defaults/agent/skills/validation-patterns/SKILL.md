@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: validation-patterns
 description: Comprehensive input validation patterns using .NET 10 AddValidation, FluentValidation, and ProblemDetails.

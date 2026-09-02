@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: dotnet-architecture-patterns
 description: "Organizing APIs at scale. Vertical slices, request pipelines, caching, error handling, idempotency."

@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: frontend-expert
 description: Comprehensive guidelines for Svelte 5, Design System, and modern UI/UX best practices.

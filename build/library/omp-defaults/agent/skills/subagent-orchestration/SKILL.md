@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: subagent-orchestration
 description: Guidelines for delegating tasks to agents, coordinating their efforts, and merging their results.

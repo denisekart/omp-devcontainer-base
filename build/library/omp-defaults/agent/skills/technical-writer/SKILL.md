@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: technical-writer
 description: Guidelines for high-quality technical documentation, CHANGELOG management, and code commenting in the project.

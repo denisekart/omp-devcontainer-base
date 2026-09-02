@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: doc-cleanup
 description: Audit and clean a repo's markdown docs for agent-context rot — completed-work logs, executed plans never rewritten, stale facts, internal contradictions, dead paths. Use when the user asks to evaluate/clean up docs, says docs are "hurting agent thinking", mentions "doc debt", "stale docs", "docs cleanup", or when agent-entry docs (CLAUDE.md/AGENTS.md and their required reading) have grown fat with history.

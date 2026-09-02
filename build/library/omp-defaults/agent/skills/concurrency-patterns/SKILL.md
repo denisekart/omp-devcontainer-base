@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: concurrency-patterns
 description: Choosing the right concurrency abstraction in .NET. Covers async/await, Channels, Parallel.ForEachAsync, and synchronization primitives.

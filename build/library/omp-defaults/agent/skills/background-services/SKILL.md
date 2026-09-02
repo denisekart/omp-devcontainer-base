@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: background-services
 description: Hosted services, background jobs, outbox patterns, and graceful shutdown handling for ASP.NET Core applications.

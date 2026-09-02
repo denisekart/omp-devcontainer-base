@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: ci-cd-patterns
 description: Guidelines for GitHub Actions, project building, testing, and deployment workflows for .NET and SvelteKit.

@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: playwright-testing
 description: Guidelines for end-to-end (E2E) testing using Playwright for .NET with Aspire orchestration.

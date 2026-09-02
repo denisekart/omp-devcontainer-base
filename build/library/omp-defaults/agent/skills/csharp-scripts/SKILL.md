@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: csharp-scripts
 description: Writing and running single-file C# programs using top-level statements and the `dotnet <file>.cs` command in .NET 10.

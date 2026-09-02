@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: security-auditor
 description: Expertise in ASP.NET Core security, authentication patterns, secrets management, and OWASP mitigation.

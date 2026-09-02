@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: coding-standards
 description: Modern, high-performance C# coding standards using records, pattern matching, value objects, and async/await best practices.

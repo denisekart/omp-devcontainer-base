@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: test-quality
 description: Measuring and improving test effectiveness using code coverage, CRAP score analysis, and mutation testing.

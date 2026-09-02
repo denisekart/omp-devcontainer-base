@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: ef-core-specialist
 description: Advanced EF Core patterns, including architecture, performance, migrations, and clean data modeling.

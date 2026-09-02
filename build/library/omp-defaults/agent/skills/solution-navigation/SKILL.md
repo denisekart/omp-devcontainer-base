@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: solution-navigation
 description: Efficiently navigating and understanding large .NET solutions, project structures, and dependency graphs.

@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: caching-strategies
 description: Comprehensive caching patterns for ASP.NET Core APIs. Covers output caching, memory caching, distributed caching with Redis, and HybridCache.

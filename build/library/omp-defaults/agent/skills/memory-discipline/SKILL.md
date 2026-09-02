@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: memory-discipline
 description: Discipline for reading and writing memory — what makes a good learning, tag conventions, and the handoff firewall. Load this when writing or reading memory as part of a worker agent's workflow.

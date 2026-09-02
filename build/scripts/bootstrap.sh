@@ -142,9 +142,9 @@ profile_bullets() {
 echo "bootstrap.sh: stack=$STACK profiles=${PROFILES[*]:-none}"
 
 # --- .omp directory skeleton ---
-mkdir -p .omp/drafts .omp/plans .omp/skills .omp/specs
-touch .omp/drafts/.gitkeep .omp/plans/.gitkeep .omp/skills/.gitkeep .omp/specs/.gitkeep
-echo "bootstrap.sh: ensured .omp/{drafts,plans,skills,specs}/"
+mkdir -p .omp/drafts .omp/plans .omp/skills .omp/specs .omp/agents
+touch .omp/drafts/.gitkeep .omp/plans/.gitkeep .omp/skills/.gitkeep .omp/specs/.gitkeep .omp/agents/.gitkeep
+echo "bootstrap.sh: ensured .omp/{drafts,plans,skills,specs,agents}/"
 
 # --- AGENTS.md project context file ---
 AGENTS_CONTENT="# Project Context (omp-devcontainer-base bootstrap)
@@ -157,7 +157,7 @@ $(profile_bullets)
 
 ## Profiles Location
 User-level core skills and agents are active from ~/.omp/agent/skills/ and ~/.omp/agent/agents/ (baked into the base image).
-Project-level overrides can be placed in .omp/skills/.
+Project-level overrides can be placed in .omp/skills/ and .omp/agents/.
 
 ## Native Workflow
 - **Delegation**: Use the \`task\` tool to delegate work to specialized agents (e.g., \`task(agent=\"backend-expert\", task=\"...\")\`).

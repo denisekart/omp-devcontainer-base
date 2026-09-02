@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: dotnet-aspire
 description: Guidelines for .NET Aspire orchestration, resource management, and distributed application patterns.

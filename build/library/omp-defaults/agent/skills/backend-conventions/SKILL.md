@@ -1,4 +1,3 @@
-<!-- ported for oh-my-pi -->
 ---
 name: backend-conventions
 description: Guidelines for ASP.NET Core 10, C# 14, Clean Architecture, and EF Core in the project.
