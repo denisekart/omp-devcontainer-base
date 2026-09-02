@@ -5,6 +5,7 @@
 defaultProvider: "litellm"
 defaultModel: "litellm/qwen3.8-27b"
 defaultSmallModel: "litellm/qwen3-coder-4b"
+defaultThinkingLevel: "xhigh"
 
 # LSP Configuration
 # Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/lsp-config.md

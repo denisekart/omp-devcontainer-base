@@ -30,7 +30,16 @@ The base image seeds default configurations into your user home directory:
         apiKey: "anything"
         models:
           # --- Qwen 3.8 (27B) with Dynamic Thinking & Reasoning Levels ---
-          # vLLM backend: --max-model-len 230000 --max-num-seqs 2
+          # Official recommendations (https://huggingface.co/Qwen/Qwen3.8-27B):
+          #   Thinking mode (default, xhigh): temp 1.0, top_p 0.95, top_k 20, min_p 0.0,
+          #                                   presence_penalty 0.0, repetition_penalty 1.0
+          #   Non-thinking mode (instruct):   temp 0.7, top_p 0.80, top_k 20, min_p 0.0,
+          #                                   presence_penalty 1.5, repetition_penalty 1.0
+          #   Reasoning effort: xhigh (default), medium, low
+          #   preserve_thinking: true enabled by default for all workloads
+          #   Default mode: thinking (xhigh); non-thinking (instruct) mode supported
+          # vLLM backend: --max-model-len 230000 --max-num-seqs 2 --max-num-batched-tokens 32768
+          # (2 concurrent sequences — keep subagents.parallel.concurrency at 2)
           - id: "qwen3.8-27b"
             name: "Qwen 3.8 (27B)"
             reasoning: true
@@ -39,8 +48,8 @@ The base image seeds default configurations into your user home directory:
             maxTokens: 16384
             thinking:
               mode: effort
-              minLevel: low
-              maxLevel: xhigh
+              efforts: ["low", "medium", "xhigh"]
+              defaultLevel: xhigh
             compat:
               thinkingFormat: "qwen-chat-template"
               qwenTemplateReasoningEffort: true
@@ -49,9 +58,10 @@ The base image seeds default configurations into your user home directory:
                 minimal: "low"
                 low: "low"
                 medium: "medium"
-                high: "high"
-                xhigh: "high"
-              requiresReasoningContentForToolCalls: true
+                high: "xhigh"
+                xhigh: "xhigh"
+                max: "xhigh"
+              requiresReasoningContentForToolCalls: false
               reasoningContentField: "reasoning_content"
               extraBody:
                 temperature: 0.7
@@ -72,33 +82,33 @@ The base image seeds default configurations into your user home directory:
                   repetition_penalty: 1.0
                   chat_template_kwargs:
                     enable_thinking: true
+                    preserve_thinking: true
 
           # --- Qwen 3.6 (35B-A3B) Worker Model (HauhauCS Uncensored, NVFP4) ---
-          # Multimodal MoE worker: 35B total / 3B active. Mapped to the `task`
-          # role (subagent workers). vLLM backend: --max-model-len 100000
-          # --max-num-seqs 6. Sampling per the Qwen3.6 model card;
-          # preserve_thinking keeps historical thinking traces (agent scenarios).
+          # Official recommendations (https://huggingface.co/Qwen/Qwen3.6-35B-A3B):
+          #   Thinking mode (default on):
+          #     - General:            temp 1.0, top_p 0.95, top_k 20, min_p 0.0, presence_penalty 1.5
+          #     - Coding/precise:     temp 0.6, top_p 0.95, top_k 20, min_p 0.0, presence_penalty 0.0 (configured for worker)
+          #   Non-thinking mode:
+          #     - General:            temp 0.7, top_p 0.80, top_k 20, min_p 0.0, presence_penalty 1.5
+          #     - Reasoning tasks:    temp 1.0, top_p 1.00, top_k 40, min_p 0.0, presence_penalty 2.0
+          #   Reasoning effort: Not defined/supported for Qwen 3.6 (binary thinking only)
+          #   preserve_thinking: keeps historical thinking traces in context for agent scenarios
+          # Multimodal MoE worker: 35B total / 3B active. Mapped to the `task` role (subagent workers).
+          # vLLM backend: --max-model-len 100000 --max-num-seqs 6 --max-num-batched-tokens 8192
+          #               --quantization compressed-tensors --kv-cache-dtype fp8
+          #               --enable-auto-tool-choice --tool-call-parser qwen3_coder
+          #               --reasoning-parser qwen3 (thinking + non-thinking modes)
           - id: "qwen3.6-35b"
             name: "Qwen 3.6 (35B-A3B) Worker"
             reasoning: true
             input: ["text", "image"]
             contextWindow: 100000
             maxTokens: 32768
-            thinking:
-              mode: effort
-              minLevel: low
-              maxLevel: xhigh
             compat:
+              supportsReasoningEffort: false
               thinkingFormat: "qwen-chat-template"
-              qwenTemplateReasoningEffort: true
-              supportsReasoningEffort: true
-              reasoningEffortMap:
-                minimal: "low"
-                low: "low"
-                medium: "medium"
-                high: "high"
-                xhigh: "high"
-              requiresReasoningContentForToolCalls: true
+              requiresReasoningContentForToolCalls: false
               reasoningContentField: "reasoning_content"
               extraBody:
                 temperature: 0.7
@@ -122,6 +132,9 @@ The base image seeds default configurations into your user home directory:
                     preserve_thinking: true
 
           # --- Qwen3 Coder (4B) Lightweight Model ---
+          # Official recommendations (https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507):
+          #   Sampling parameters: temp 0.7, top_p 0.80, top_k 20, min_p 0.0, presence_penalty 1.5
+          #   Instruct-only (non-thinking model; reasoning effort not supported)
           - id: "qwen3-coder-4b"
             name: "Qwen3 Coder (4B)"
             reasoning: false
@@ -173,8 +186,8 @@ To maintain consistency across team members or ensure your model setup lives dir
            maxTokens: 16384
            thinking:
              mode: effort
-             minLevel: low
-             maxLevel: xhigh
+             efforts: ["low", "medium", "xhigh"]
+             defaultLevel: xhigh
            compat:
              thinkingFormat: "qwen-chat-template"
              qwenTemplateReasoningEffort: true
@@ -183,9 +196,10 @@ To maintain consistency across team members or ensure your model setup lives dir
                minimal: "low"
                low: "low"
                medium: "medium"
-               high: "high"
-               xhigh: "high"
-             requiresReasoningContentForToolCalls: true
+               high: "xhigh"
+               xhigh: "xhigh"
+               max: "xhigh"
+             requiresReasoningContentForToolCalls: false
              reasoningContentField: "reasoning_content"
              extraBody:
                temperature: 0.7
@@ -206,27 +220,17 @@ To maintain consistency across team members or ensure your model setup lives dir
                  repetition_penalty: 1.0
                  chat_template_kwargs:
                    enable_thinking: true
+                   preserve_thinking: true
          - id: "qwen3.6-35b"
            name: "Qwen 3.6 (35B-A3B) Worker"
            reasoning: true
            input: ["text", "image"]
            contextWindow: 100000
            maxTokens: 32768
-           thinking:
-             mode: effort
-             minLevel: low
-             maxLevel: xhigh
            compat:
+             supportsReasoningEffort: false
              thinkingFormat: "qwen-chat-template"
-             qwenTemplateReasoningEffort: true
-             supportsReasoningEffort: true
-             reasoningEffortMap:
-               minimal: "low"
-               low: "low"
-               medium: "medium"
-               high: "high"
-               xhigh: "high"
-             requiresReasoningContentForToolCalls: true
+             requiresReasoningContentForToolCalls: false
              reasoningContentField: "reasoning_content"
              extraBody:
                temperature: 0.7
@@ -272,6 +276,8 @@ To maintain consistency across team members or ensure your model setup lives dir
 
    ```yaml
    # .omp/config.yml
+   defaultThinkingLevel: "xhigh"
+
    modelRoles:
      default: "litellm/qwen3.8-27b"
      smol: "litellm/qwen3-coder-4b"

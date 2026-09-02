@@ -189,6 +189,7 @@ OMP_CONFIG="# Project-level omp settings
 # Arrays REPLACE (not merge) — restate the full list if overriding extensions
 
 stack: ${STACK}
+defaultThinkingLevel: \"xhigh\"
 
 # Model Role Mapping
 #   qwen3.8-27b = primary (agentic reasoning; default/slow/plan)
