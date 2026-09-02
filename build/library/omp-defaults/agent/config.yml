@@ -41,11 +41,10 @@ hindsight:
 # Global plugins (pi-loop-police, pi-lens, context-mode, pi-simplify) are installed via install-omp-plugins.sh (omp plugin install)
 extensions: []
 
-# Plan workflow artifacts
-plan:
-  artifactDir: ".omp/plans"
-  draftDir: ".omp/drafts"
-  specsDir: ".omp/specs"
+# Plan/draft/spec locations are NOT configurable here: the built-in plan-mode writes
+# session-scoped artifacts, and there is no plan-artifact-dir config key in omp.
+# Project-scoped plans/drafts/specs are governed by the plan-workflow skill +
+# AGENTS.md (.omp/plans, .omp/drafts, .omp/specs). Do not re-add a `plan:` block.
 
 # Model Role Mapping
 # Assign models defined in models.yml to native omp roles.
@@ -88,6 +87,14 @@ subagents:
   forceTopLevelAsync: true      # Background tasks by default
   parallel:
     concurrency: 4              # Max parallel slots for 'big' model tasks
+
+# Subagent isolation: run each subagent in an isolated copy of the working tree
+# (COW clone where the filesystem supports it; 'auto' picks the best available and
+# degrades to the shared tree otherwise). Keeps parallel subagents from clobbering
+# each other and keeps their churn out of the orchestrator's live tree.
+task:
+  isolation:
+    mode: "auto"
 
 agents:
   customDirectories:

@@ -6,7 +6,8 @@
 #   2. seed-omp-home.sh        — seeds ~/.omp/agent from immutable image defaults (MUST run first)
 #   3. install-omp-plugins.sh  — THIS SCRIPT (requires seed already done)
 #
-# Idempotency: uses ~/.omp/.plugins-installed-v1 sentinel.
+# Idempotency: uses ~/.omp/.plugins-installed-v1 sentinel, which records the
+# omp version that installed the current plugins (a version change re-runs the install).
 # To force reinstall: rm ~/.omp/.plugins-installed-v1
 #
 # WHY ROOT: omp plugins are global bun packages installed into the image's
@@ -34,6 +35,11 @@ if ! command -v omp >/dev/null 2>&1; then
   OMP_CMD="pi"
 fi
 
+# Rebuild reconciliation: capture the omp version now (OMP_CMD resolved above);
+# the sentinel written at the end records it, so a rebuilt image (new omp)
+# fails the idempotency check below and triggers a plugin reinstall.
+CURRENT_OMP_VER="$("${OMP_CMD}" --version 2>/dev/null | head -1 || echo unknown)"
+
 # Gate 2: verify seed-omp-home.sh already ran (config.yml must exist)
 if [[ ! -f "${CONFIG_CHECK}" ]]; then
   echo "install-omp-plugins.sh: ERROR — ${CONFIG_CHECK} not found." >&2
@@ -41,11 +47,15 @@ if [[ ! -f "${CONFIG_CHECK}" ]]; then
   exit 1
 fi
 
-# Idempotency check
+# Idempotency check: skip only when the sentinel exists AND records the current
+# omp version; otherwise (missing sentinel, or omp version changed) reinstall.
 if [[ -f "${SENTINEL}" ]]; then
-  echo "install-omp-plugins.sh: plugins already installed (sentinel exists). Skipping."
-  echo "install-omp-plugins.sh: To force reinstall, delete: ${SENTINEL}"
-  exit 0
+  RECORDED="$(cat "${SENTINEL}" 2>/dev/null || echo '')"
+  if [[ "${RECORDED}" == "${CURRENT_OMP_VER}" ]]; then
+    echo "install-omp-plugins.sh: plugins already installed (omp ${CURRENT_OMP_VER} unchanged). Skipping."
+    exit 0
+  fi
+  echo "install-omp-plugins.sh: omp version changed ('${RECORDED}' -> '${CURRENT_OMP_VER}'); reinstalling plugins."
 fi
 
 echo "install-omp-plugins.sh: installing pinned omp plugins..."
@@ -135,14 +145,16 @@ done
 
 # Return ownership of any user-home trees the root install touched
 # (omp state, bun/npm caches).
-sudo chown -R vscode:vscode "${HOME}/.omp" "${HOME}/.bun" "${HOME}/.cache" 2>/dev/null || true
+sudo chown -R vscode:vscode "${HOME}/.omp" "${HOME}/.bun" "${HOME}/.cache" "${HOME}/.pi-lens" 2>/dev/null || true
 
 # Capture resolved versions and integrity digests into plugins.lock.json
 echo "install-omp-plugins.sh: capturing version and integrity data..."
 LOCK_JSON='{}'
 for pkg in "${PLUGINS[@]}"; do
-  VERSION="$(npm view "${pkg}" version 2>/dev/null || echo unknown)"
-  INTEGRITY="$(npm view "${pkg}@${VERSION}" dist.integrity 2>/dev/null || echo unknown)"
+  PJSON="${HOME}/.omp/plugins/node_modules/${pkg}/package.json"
+  VERSION="$(node -p "require('${PJSON}').version" 2>/dev/null || echo unknown)"
+  INTEGRITY="$(sha256sum "${PJSON}" 2>/dev/null | awk '{print $1}')"
+  [[ -n "${INTEGRITY}" ]] || INTEGRITY="unknown"
   LOCK_JSON="$(jq -c --arg p "${pkg}" --arg v "${VERSION}" --arg i "${INTEGRITY}" \
     '. + {($p): {version: $v, integrity: $i}}' <<<"${LOCK_JSON}")"
 done
@@ -156,6 +168,6 @@ if [[ ${#FAILED[@]} -gt 0 ]]; then
   echo "install-omp-plugins.sh: continuing devcontainer initialization..."
 else
   # Sentinel only after a fully successful install + lockfile write
-  touch "${SENTINEL}"
+  printf '%s\n' "${CURRENT_OMP_VER}" > "${SENTINEL}"
   echo "install-omp-plugins.sh: done. All plugins installed, lockfile written to ${LOCKFILE}, sentinel created."
 fi

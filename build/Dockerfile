@@ -82,6 +82,7 @@ RUN curl -sSL https://dotnet.microsoft.com/download/dotnet/scripts/v1/dotnet-ins
     && ln -s "$DOTNET_ROOT/dotnet" /usr/local/bin/dotnet
 
 # Install Aspire workload
+RUN dotnet workload update
 RUN dotnet workload install aspire
 
 # Install git-delta
