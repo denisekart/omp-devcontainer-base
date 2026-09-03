@@ -193,7 +193,7 @@ defaultThinkingLevel: \"xhigh\"
 
 # Model Role Mapping
 #   qwen3.8-27b = primary (agentic reasoning; default/slow/plan)
-#   qwen3.6-35b = worker (35B-A3B MoE; delegated subagent tasks)
+#   qwen3.6-35b = worker (35B-A3B MoE; delegated subagent tasks) + advisor (binary thinking, on by default)
 #   qwen3-coder-4b = smol (background/utility tasks)
 modelRoles:
   default: \"litellm/qwen3.8-27b\"
@@ -203,6 +203,19 @@ modelRoles:
   task: \"litellm/qwen3.6-35b\"     # Worker model: strong coder/specialist given detailed instructions
   memory: \"litellm/qwen3-coder-4b\" # Used for mnemopi extraction (online fallback)
   tiny: \"litellm/qwen3-coder-4b\"   # Used for lightweight background tasks (online fallback)
+  advisor: \"litellm/qwen3.6-35b\"     # Passive reviewer; binary thinking, on by default (no effort levels)
+
+# Advisor (passive reviewer)
+# A second model reviews the primary transcript as it happens and can inject
+# advice (nits / concerns / blockers) into the session. Runs the qwen3.6 worker
+# (binary thinking — on by default, no effort levels). OFF by default:
+#   per session:    /advisor on          (also: /advisor off | status | dump)
+#   single run:     omp -p --advisor 'task'
+#   persistently:   flip advisor.enabled to true
+# Reviewer guidance: add WATCHDOG.md (.omp/ or the user agent dir) for review
+# priorities, or WATCHDOG.yml for a named advisor roster.
+advisor:
+  enabled: false
 
 # Retry / Fallback Chains (retry.fallbackChains)
 # Model-oriented keys: every role running qwen3.8-27b (default/slow/plan) falls
