@@ -21,6 +21,8 @@ The baked `plan-workflow` skill governs how significant changes are planned. It 
 
 Architecture-tier plans — those meeting 2+ of: a new durable service, 5+ modules touched, a new external contract, multi-session scope — additionally get SDD-lite companion docs at `.omp/specs/<slug>/requirements.md` and `.omp/specs/<slug>/design.md`.
 
+For spec-driven work (drafts → approved plan with full spec + task dependency matrix → wave-parallel execution with tracked progress), follow the SDD workflow: [docs/spec-driven-development.md](spec-driven-development.md). The `plan-workflow` and `start-work` skills implement it.
+
 ## Delegation & the Agent Fleet
 
 The `task` tool spawns subagents that work in parallel: `task(agent="backend-expert", task="...")`. Seeded concurrency in `~/.omp/agent/config.yml`: `globalConcurrencyLimit: 20`, `parallel.concurrency: 4`, `maxSubagentDepth: 2`, `forceTopLevelAsync: true`.
@@ -80,8 +82,8 @@ All 33 skills are baked into the image (`build/library/omp-defaults/agent/skills
 
 | Skill | Description |
 |-------|-------------|
-| `plan-workflow` | Plan/refine/execute workflow: intent routing, gap analysis, approval gate, dual high-accuracy review, and the `.omp/plans` artifact contract |
-| `start-work` | Executes an approved `.omp/plans/<slug>.md`; invoked only explicitly by the user |
+| `plan-workflow` | Spec-driven planning workflow: specify (local:// drafts with revision log, EARS requirements, tier rubric), gap analysis, approval via `xd://propose`, materialization to `.omp/plans` + `.omp/specs` + `.omp/drafts`, plan-file contract (full spec + todos + dependency matrix), adversarial review loops |
+| `start-work` | Executes an approved `.omp/plans/<slug>.md` via the SDD implement stage: wave-parallel dispatch from the dependency matrix, per-todo verification, automatic progress tracking, spec-drift handling, final verification wave with spec-coverage audit; invoked only explicitly by the user |
 | `handoff` | Transitions state between sessions or agents (native `/continue` and `task` blocks) |
 | `verification-gate` | Final verification steps to ensure code quality and mitigate AI hallucinations |
 | `subagent-orchestration` | Guidelines for delegating tasks to agents, coordinating their efforts, and merging results |
