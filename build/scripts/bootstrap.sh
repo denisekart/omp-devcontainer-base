@@ -164,7 +164,7 @@ Project-level overrides can be placed in .omp/skills/ and .omp/agents/.
 - **Memory**: Use the \`recall\` tool to check for prior context and the \`store\` tool to save new project-wide learnings.
 - **Handoff**: Use \`/continue\` to save state and resume in a fresh session when context becomes too heavy.
 - **Plan Mode**: Use the \`--plan\` flag to create plans in \`.omp/plans/\`.
-- **Spec-driven development**: plan mode runs the SDD workflow (\`.omp/drafts/<slug>.md\` → \`.omp/plans/<slug>.md\` + \`.omp/specs/<slug>/\`); \`$start-work <slug>\` executes with tracked progress. Guide: \`docs/spec-driven-development.md\`.
+- **Spec-driven development**: plan mode runs the SDD workflow (\`.omp/drafts/<slug>.md\` → \`.omp/plans/<slug>.md\` + \`.omp/specs/<slug>/\`); \`\$start-work <slug>\` executes with tracked progress. Guide: \`docs/spec-driven-development.md\`.
 
 ## Orchestration (main agent = orchestrator, not worker)
 - The main agent plans, delegates, and verifies. It does NOT do grunt work itself: no bulk reads/greps, no file edits, no long-running commands — it coordinates.
@@ -289,8 +289,7 @@ case "$STACK" in
       mcpServers: {
         docker:    {command: "mcp-server-docker"},
         aspire:    {command: "aspire", args: ["agent", "mcp"]},
-        shadcn:    {command: "npx",    args: ["-y", "shadcn@latest", "mcp"]},
-        puppeteer: {command: "npx",    args: ["-y", "@modelcontextprotocol/server-puppeteer"]}
+        shadcn:    {command: "npx",    args: ["-y", "shadcn@latest", "mcp"]}
       }
     }')"
     ;;
@@ -298,8 +297,7 @@ case "$STACK" in
     MCP_JSON="$(jq -n --arg schema "$MCP_SCHEMA" '{
       "$schema": $schema,
       mcpServers: {
-        shadcn:    {command: "npx", args: ["-y", "shadcn@latest", "mcp"]},
-        puppeteer: {command: "npx", args: ["-y", "@modelcontextprotocol/server-puppeteer"]}
+        shadcn:    {command: "npx", args: ["-y", "shadcn@latest", "mcp"]}
       }
     }')"
     ;;

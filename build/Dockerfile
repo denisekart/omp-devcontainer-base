@@ -159,6 +159,8 @@ for (const file of walk("/usr/local")) {\
   }\
 }'
 
+RUN omp update || true
+
 # Install Puppeteer apt dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \

@@ -61,7 +61,7 @@ providers:
 # Engine limits: qwen3.8-27b serves --max-num-seqs 2 (big-model slots); the
 # qwen3.6-35b worker serves --max-num-seqs 6 (vLLM queues overflow beyond 6).
 subagents:
-  globalConcurrencyLimit: 20    # Combined limit (2 big + 18 small sessions)
+  globalConcurrencyLimit: 15    # Combined limit (2 big + 18 small sessions)
   maxSubagentDepth: 2           # Prevent unbounded nesting
   forceTopLevelAsync: true      # Background tasks by default
   parallel:

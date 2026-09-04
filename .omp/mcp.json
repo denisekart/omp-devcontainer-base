@@ -18,13 +18,6 @@
         "shadcn@latest",
         "mcp"
       ]
-    },
-    "puppeteer": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-puppeteer"
-      ]
     }
   }
 }
