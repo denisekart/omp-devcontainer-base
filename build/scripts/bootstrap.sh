@@ -142,9 +142,9 @@ profile_bullets() {
 echo "bootstrap.sh: stack=$STACK profiles=${PROFILES[*]:-none}"
 
 # --- .omp directory skeleton ---
-mkdir -p .omp/drafts .omp/plans .omp/skills .omp/specs .omp/agents
-touch .omp/drafts/.gitkeep .omp/plans/.gitkeep .omp/skills/.gitkeep .omp/specs/.gitkeep .omp/agents/.gitkeep
-echo "bootstrap.sh: ensured .omp/{drafts,plans,skills,specs,agents}/"
+mkdir -p .omp/plans .omp/skills .omp/agents
+touch .omp/plans/.gitkeep .omp/skills/.gitkeep .omp/agents/.gitkeep
+echo "bootstrap.sh: ensured .omp/{plans,skills,agents}/"
 
 # --- AGENTS.md project context file ---
 AGENTS_CONTENT="# Project Context (omp-devcontainer-base bootstrap)
@@ -163,8 +163,7 @@ Project-level overrides can be placed in .omp/skills/ and .omp/agents/.
 - **Delegation**: Use the \`task\` tool to delegate work to specialized agents (e.g., \`task(agent=\"backend-expert\", task=\"...\")\`).
 - **Memory**: Use the \`recall\` tool to check for prior context and the \`store\` tool to save new project-wide learnings.
 - **Handoff**: Use \`/continue\` to save state and resume in a fresh session when context becomes too heavy.
-- **Plan Mode**: Use the \`--plan\` flag to create plans in \`.omp/plans/\`.
-- **Spec-driven development**: plan mode runs the SDD workflow (\`.omp/drafts/<slug>.md\` → \`.omp/plans/<slug>.md\` + \`.omp/specs/<slug>/\`); \`\$start-work <slug>\` executes with tracked progress. Guide: \`docs/spec-driven-development.md\`.
+- **Plan Mode**: Use the native \`--plan\` flag (or \`Alt+Shift+P\` in-session). The agent submits plans via the \`xd://propose\` approval dialog; approved plan files live in \`.omp/plans/\`.
 
 ## Orchestration (main agent = orchestrator, not worker)
 - The main agent plans, delegates, and verifies. It does NOT do grunt work itself: no bulk reads/greps, no file edits, no long-running commands — it coordinates.
@@ -175,10 +174,8 @@ Project-level overrides can be placed in .omp/skills/ and .omp/agents/.
 
 ## Project-Scoped Artifacts (always under the project .omp/, never the user home)
 - Plans   → .omp/plans/<slug>.md
-- Drafts  → .omp/drafts/<slug>.md
-- Specs   → .omp/specs/<slug>/  (requirements.md, design.md)
 - Skills  → .omp/skills/
-- When producing a plan/draft, write it under the project .omp/ (via the plan-workflow skill). Do NOT leave session artifacts in a session-local (local://) root or the user home (~/.omp/agent) — they must live with the repo so they persist and are reviewable.
+- When producing a plan, write it under the project .omp/ (never the session-local local:// root or the user home ~/.omp/agent) — it must live with the repo so it persists and is reviewable.
 
 ## Scaffolding
 - Run \`/scaffold\` to generate the recommended project structure for the current stack.

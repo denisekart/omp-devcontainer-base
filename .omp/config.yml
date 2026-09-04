@@ -70,3 +70,6 @@ subagents:
 task:
   isolation:
     mode: "auto"
+
+tools:
+  format: "native"

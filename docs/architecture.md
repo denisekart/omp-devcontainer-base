@@ -32,7 +32,7 @@ Base image: `mcr.microsoft.com/devcontainers/base:bookworm`.
 
 **Immutable baked paths** (read-only defaults, never modified at runtime):
 
-- `/usr/local/share/omp-defaults/agent/` — `config.yml`, `models.yml`, `mcp.json`, `agents/` (9 agents), `skills/` (33 skills), `cache/` (pre-downloaded tiny models: `gemma-270m`, `lfm2-350m`, `lfm2-1.2b`)
+- `/usr/local/share/omp-defaults/agent/` — `config.yml`, `models.yml`, `mcp.json`, `agents/` (9 agents), `skills/` (31 skills), `cache/` (pre-downloaded tiny models: `gemma-270m`, `lfm2-350m`, `lfm2-1.2b`)
 - `/usr/local/share/omp-scripts/` — 5 scripts: `link-gitconfig.sh`, `seed-omp-home.sh`, `install-omp-plugins.sh`, `bootstrap.sh`, `hindsight-supervisor.sh`
 
 **Global installs:**
@@ -55,7 +55,7 @@ Ordered contract for the 5 scripts (order enforced by `postCreateCommand`):
    - Force reinstall: `rm ~/.omp/.plugins-installed-v1 && bash /usr/local/share/omp-scripts/install-omp-plugins.sh`
 4. **`bootstrap.sh`** — workspace root = `git rev-parse --show-toplevel` (fallback: CWD). Stack from `--stack <preset>` or auto-detection (`has_dotnet`: any `*.sln`/`*.csproj`; `has_aspire`: an `*AppHost*.csproj` or any csproj referencing `Aspire.Hosting.AppHost`; `has_svelte`: any `package.json` containing `"svelte"`; precedence dotnet → aspire → svelte → `generic`). All writes go through `write_if_absent` (NEVER overwrites existing):
    - `AGENTS.md` — project-context template with stack + active-profile bullets
-   - `.omp/{drafts,plans,skills}/` — with `.gitkeep`
+   - `.omp/{plans,skills,agents}/` — with `.gitkeep`
    - `.omp/config.yml` — stack, `providers` tiny-model block, commented `modelRoles`
    - `.omp/models.yml` — copy of `~/.omp/agent/models.yml`, else the image default
    - `.omp/mcp.json` — per stack: `dotnet-aspire-svelte` / `dotnet-only` / `generic` → `docker`, `aspire`, `shadcn`, `puppeteer`; `svelte-only` → `shadcn`, `puppeteer`

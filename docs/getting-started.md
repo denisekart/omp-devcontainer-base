@@ -93,7 +93,7 @@ Ordered one-line summary (order enforced by `postCreateCommand`):
 2. `link-gitconfig.sh` — persistent gitconfig via symlink to `~/.persisted-git/gitconfig`
 3. `seed-omp-home.sh` — seeds `~/.omp/agent` from the image defaults, never overwriting existing files
 4. `install-omp-plugins.sh` — installs the 4 pinned plugins (idempotent)
-5. `bootstrap.sh` — writes `AGENTS.md` + `.omp/{config.yml,models.yml,mcp.json,drafts,plans,skills}` into your repo, auto-detecting the stack
+5. `bootstrap.sh` — writes `AGENTS.md` + `.omp/{config.yml,models.yml,mcp.json,plans,skills,agents}` into your repo, auto-detecting the stack
 
 Then `postStartCommand` starts the `hindsight` tmux session. Full contracts: [architecture.md](architecture.md) (section 3).
 

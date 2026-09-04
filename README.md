@@ -28,7 +28,6 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md)
 | [docs/models.md](docs/models.md) | Model configuration, roles, local tiny models |
 | [docs/mcp.md](docs/mcp.md) | MCP reference + bundled servers |
 | [docs/plugins.md](docs/plugins.md) | Plugin adoption decisions |
-| [docs/spec-driven-development.md](docs/spec-driven-development.md) | Spec-driven development: draft → approved plan with full spec + task matrix → wave execution with tracked progress |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Symptom → fix |
 | [docs/architecture.md](docs/architecture.md) | Internals & change flow — for maintainers of this image |
 

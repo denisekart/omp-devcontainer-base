@@ -6,22 +6,18 @@ Day-to-day reference for working with `omp` inside the container. Setup and onbo
 
 - `omp` starts the TUI. `pi` is a symlink to the same binary; `oc` is a zsh alias for it.
 - `omp --profile <name>` starts a session under a named profile (see [Profiles](#profiles)).
-- Plan mode: launch with `--plan` — planning follows the plan workflow below and plan artifacts land in `.omp/plans/`.
+- Plan mode: launch with `--plan` (or toggle in-session with `Alt+Shift+P`) — the agent researches and submits a native plan via the `xd://propose` approval dialog. Approved plan files live in `.omp/plans/` so they persist across sessions and survive `/continue` handoffs.
 
-## Plan Workflow
+## Plan Mode
 
-The baked `plan-workflow` skill governs how significant changes are planned. It is a planning-only workflow: it never implements, and it never starts work on its own.
+Plan mode is a native omp feature — no custom skills are involved.
 
-1. **Draft** — the agent writes a draft at `.omp/drafts/<slug>.md` (components ledger, open assumptions, scope IN/OUT).
-2. **Gap analysis** — a mandatory read-only sub-session checks the draft for contradictions, missing constraints, and unvalidated assumptions; findings are folded in.
-3. **Approval gate** — the brief is presented once and waits for your explicit approval. Approval authorizes plan creation only, never implementation.
-4. **Plan file** — after approval, `.omp/plans/<slug>.md` is written: every todo is a column-zero checkbox carrying references, executable acceptance criteria, QA scenarios (happy + failure), and a commit message.
-5. **Dual high-accuracy review** (for ambiguous requests or on request) — two concurrent review sub-sessions (a plan critic and an independent architecture reviewer) run until both approve.
-6. **Execution** — only the `start-work` skill executes an approved plan, and it is invoked by the **user**, never by the agent.
+1. **Enter plan mode** — launch with `--plan`, toggle mid-session with `Alt+Shift+P` (`app.plan.toggle`), or set `plan.defaultOnStartup: true`. Plan mode makes the working tree read-only.
+2. **Agent plans** — the agent researches the codebase (read-only), presents the approach, and submits the plan by writing its slug to `xd://propose`.
+3. **You approve** — you pick exactly one of the 4 options (approve-and-execute / approve-and-compact / approve-and-keep / save-and-quit). The agent never self-approves.
+4. **Execution** — after approval the agent executes. For multi-step work it writes the plan to `.omp/plans/<slug>.md` (git-tracked) and, when context gets heavy, you `/continue` — the fresh session picks up from the plan file.
 
-Architecture-tier plans — those meeting 2+ of: a new durable service, 5+ modules touched, a new external contract, multi-session scope — additionally get SDD-lite companion docs at `.omp/specs/<slug>/requirements.md` and `.omp/specs/<slug>/design.md`.
-
-For spec-driven work (drafts → approved plan with full spec + task dependency matrix → wave-parallel execution with tracked progress), follow the SDD workflow: [docs/spec-driven-development.md](spec-driven-development.md). The `plan-workflow` and `start-work` skills implement it.
+Headless: `omp -p --plan-yolo` auto-approves and implements.
 
 ## Delegation & the Agent Fleet
 
@@ -76,14 +72,12 @@ Skills do not need manual invocation: they load automatically when their descrip
 
 ## Baked Skills
 
-All 33 skills are baked into the image (`build/library/omp-defaults/agent/skills/`):
+All 31 skills are baked into the image (`build/library/omp-defaults/agent/skills/`):
 
 **Workflow**
 
 | Skill | Description |
 |-------|-------------|
-| `plan-workflow` | Spec-driven planning workflow: specify (local:// drafts with revision log, EARS requirements, tier rubric), gap analysis, approval via `xd://propose`, materialization to `.omp/plans` + `.omp/specs` + `.omp/drafts`, plan-file contract (full spec + todos + dependency matrix), adversarial review loops |
-| `start-work` | Executes an approved `.omp/plans/<slug>.md` via the SDD implement stage: wave-parallel dispatch from the dependency matrix, per-todo verification, automatic progress tracking, spec-drift handling, final verification wave with spec-coverage audit; invoked only explicitly by the user |
 | `handoff` | Transitions state between sessions or agents (native `/continue` and `task` blocks) |
 | `verification-gate` | Final verification steps to ensure code quality and mitigate AI hallucinations |
 | `subagent-orchestration` | Guidelines for delegating tasks to agents, coordinating their efforts, and merging results |

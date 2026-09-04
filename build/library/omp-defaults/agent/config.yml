@@ -44,8 +44,8 @@ extensions: []
 
 # Plan/draft/spec locations are NOT configurable here: the built-in plan-mode writes
 # session-scoped artifacts, and there is no plan-artifact-dir config key in omp.
-# Project-scoped plans/drafts/specs are governed by the plan-workflow skill +
-# AGENTS.md (.omp/plans, .omp/drafts, .omp/specs). Do not re-add a `plan:` block.
+# Plan files written under .omp/plans/ are a project convention (AGENTS.md). Do not
+# re-add a `plan:` block.
 
 # Model Role Mapping
 # Assign models defined in models.yml to native omp roles.
@@ -138,3 +138,6 @@ agents:
   customDirectories:
     - "~/.omp/agent/agents"
     - ".omp/agents"
+
+tools:
+  format: "native"
