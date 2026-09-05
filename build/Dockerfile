@@ -161,8 +161,10 @@ for (const file of walk("/usr/local")) {\
 
 RUN omp update || true
 
-# Install Puppeteer apt dependencies
+# Install Puppeteer browser (native chromium so the bundled x64 Chrome download
+# is never needed - it cannot run on arm64) plus its apt dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium \
     libnss3 \
     libatk-bridge2.0-0 \
     libxcomposite1 \
@@ -173,6 +175,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpangocairo-1.0-0 \
     libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
+# Install MCP servers as global npm bins (shadcn mcp, puppeteer mcp) so MCP
+# launches resolve on PATH without npx. The baked MCP config points puppeteer
+# at /usr/local/puppeteer-chromium (a symlink to the native chromium), so the
+# ~170 MB x64 Chrome download is skipped on every arch. Clean the root npm cache.
+RUN npm install -g shadcn @modelcontextprotocol/server-puppeteer \
+    && ln -sf /usr/bin/chromium /usr/local/puppeteer-chromium \
+    && npm cache clean --force
 
 # Install shell formatter
 RUN arch="$(dpkg --print-architecture)" && \

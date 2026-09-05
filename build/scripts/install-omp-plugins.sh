@@ -145,7 +145,7 @@ done
 
 # Return ownership of any user-home trees the root install touched
 # (omp state, bun/npm caches).
-sudo chown -R vscode:vscode "${HOME}/.omp" "${HOME}/.bun" "${HOME}/.cache" "${HOME}/.pi-lens" 2>/dev/null || true
+sudo chown -R vscode:vscode "${HOME}/.npm" "${HOME}/.omp" "${HOME}/.bun" "${HOME}/.cache" "${HOME}/.pi-lens" 2>/dev/null || true
 
 # Capture resolved versions and integrity digests into plugins.lock.json
 echo "install-omp-plugins.sh: capturing version and integrity data..."

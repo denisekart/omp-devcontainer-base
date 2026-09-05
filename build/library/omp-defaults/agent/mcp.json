@@ -14,11 +14,12 @@
       "command": "mcp-server-docker"
     },
     "puppeteer": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-puppeteer"],
+      "command": "mcp-server-puppeteer",
       "env": {
         "PUPPETEER_LAUNCH_OPTIONS": "{\"headless\": true}",
-        "ALLOW_DANGEROUS": "true"
+        "ALLOW_DANGEROUS": "true",
+        "PUPPETEER_EXECUTABLE_PATH": "/usr/local/puppeteer-chromium",
+        "DOCKER_CONTAINER": "true"
       }
     }
   }

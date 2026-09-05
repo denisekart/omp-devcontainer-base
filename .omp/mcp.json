@@ -12,10 +12,8 @@
       ]
     },
     "shadcn": {
-      "command": "npx",
+      "command": "shadcn",
       "args": [
-        "-y",
-        "shadcn@latest",
         "mcp"
       ]
     }
