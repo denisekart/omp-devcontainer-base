@@ -1,46 +1,39 @@
 ---
 name: doc-cleanup
-description: Audit and clean a repo's markdown docs for agent-context rot — completed-work logs, executed plans never rewritten, stale facts, internal contradictions, dead paths. Use when the user asks to evaluate/clean up docs, says docs are "hurting agent thinking", mentions "doc debt", "stale docs", "docs cleanup", or when agent-entry docs (CLAUDE.md/AGENTS.md and their required reading) have grown fat with history.
+description: "Audit and clean a repo's markdown docs for agent-context rot — completed-work logs, stale facts, contradictions, dead paths."
 ---
 
-# Doc cleanup — remove context rot from agent-facing docs
+# Doc cleanup
 
-Docs that agents must read every session are paid for in context tokens and,
-worse, in wrong conclusions: a stale fact in an "authoritative" doc beats a
-correct fact an agent never looks up. This skill audits, then archives history
-and rewrites live docs down to current facts.
+## When to use
 
-**Two-phase contract: diagnose first, report findings, and only execute after
-the user approves.** Never silently rewrite docs.
+- User asks to evaluate/clean up docs, mentions "doc debt", "stale docs", or "docs cleanup".
+- Agent-entry docs (`CLAUDE.md`, `AGENTS.md` and their required readings) have grown fat with history.
+- Internal contradictions, stale facts, or dead paths are suspected in the repo's documentation.
 
-## Phase 1 — Inventory
+## Rules
 
-1. `find . -name "*.md" -not -path "*/node_modules/*" -not -path "*/.git/*" | xargs wc -l | sort -rn`
-2. Read the agent-entry docs (`CLAUDE.md`, `AGENTS.md`, and every doc they
-   instruct agents to read before working). These cost context in *every*
-   session — weight them highest.
+1. **Two-phase contract**: diagnose first, report findings, execute only after user approval. Never silently rewrite.
+2. Use real tools (`read`, `glob`, `lsp`) — never `ls` or shell globbing for discovery.
+3. **Archive, don't delete**: move completed work logs and executed plans to archive.
+4. Rewrite live docs down to current facts; point at sources of truth.
+5. Collapse done checklists; banner superseded authorities; fix entry docs.
 
-## Phase 2 — Diagnose (read-only)
+## Phase Contract
 
-Hunt six rot patterns:
-1. **Completed-work logs.**
-2. **Executed plans never rewritten.**
-3. **Internal contradictions.**
-4. **Stale facts vs code.**
-5. **Dead paths.**
-6. **Authority drift.**
+| Phase | Action |
+| ------- | -------- |
+| 1. Inventory | `glob` all `.md` files; weight agent-entry docs highest (they cost context every session). |
+| 2. Diagnose | Hunt six rot patterns: completed-work logs, executed plans never rewritten, contradictions, stale facts, dead paths, authority drift. |
+| 3. Report | Present findings worst-first; propose cleanup plan for approval. |
+| 4. Execute | Archive, rewrite, collapse, banner, fix — after user approves. |
+| 5. Verify | Check links and git status. |
 
-## Phase 3 — Report
-Present findings worst-first. Propose cleanup plan.
+## Checklist
 
-## Phase 4 — Execute (after approval)
-- **Archive, don't delete.**
-- **Rewrite live doc to current facts.**
-- **Point at sources of truth.**
-- **Collapse done checklists.**
-- **Keep the traps.**
-- **Banner superseded authorities.**
-- **Fix entry docs.**
-
-## Phase 5 — Verify
-Check links and git status.
+- [ ] Are agent-entry docs lean and current?
+- [ ] Are completed-work logs archived, not left in live docs?
+- [ ] Are executed plans rewritten or archived?
+- [ ] Are internal contradictions resolved?
+- [ ] Are stale facts updated to current code?
+- [ ] Are dead paths removed or bannered?

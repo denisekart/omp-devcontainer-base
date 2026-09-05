@@ -388,3 +388,10 @@ subagents:
   parallel:
     concurrency: 2
 ```
+
+## Model ↔ Agent Mapping
+
+- **`@task` / `@smol` agents** (worker model): MUST NOT specify effort in their body — the Qwen3.6 A3B worker uses **binary thinking only**. Effort keywords (`ultrathink`, `medium`, etc.) are no-ops in agent bodies for these roles.
+- **`@slow` / `@plan` agents** (primary model): use `low|medium|xhigh` effort levels as configured in `models.yml` and `config.yml`.
+
+Frontmatter `thinking-level` is safe on all roles (the harness clamps rather than errors). Agent body effort keywords are the distinction: omit them for `@task`/`@smol`-mapped agents.

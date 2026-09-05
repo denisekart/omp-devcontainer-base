@@ -38,3 +38,5 @@ The container image and this repository's tooling are licensed under the [MIT Li
 ## For Maintainers
 
 Building and publishing: `docker buildx build -f build/Dockerfile build/` (or a devcontainer rebuild); a tag push on `main` triggers CI, which builds and pushes `linux/amd64,linux/arm64`. See [docs/architecture.md](docs/architecture.md).
+
+The [sync-omp-defaults.sh](build/scripts/sync-omp-defaults.sh) script is the dogfood escape hatch: after an image rebuild, it force-syncs edited/deleted defaults into the workspace without touching live state (sessions, databases, cache).

@@ -108,5 +108,6 @@ What you want to change → file to edit → how it reaches existing users:
 | Plugin list | the `PLUGINS` array in `build/scripts/install-omp-plugins.sh` | Next container create (or force reinstall after deleting the sentinel) |
 | tmux/shell behavior | the respective blocks in `build/Dockerfile` | Next image build + container create |
 | VS Code/mounts/ports | BOTH `.devcontainer/*.json` | Keep in sync; only the `build` vs `image` key may differ |
+| Edited/deleted defaults | `build/scripts/sync-omp-defaults.sh` | Dogfood escape hatch: force-syncs only the defaults surface (`agents/`, `skills/`, top-level config) without touching live state; run after an image rebuild when repo defaults diverge from seeded defaults |
 
 Then: rebuild the image (devcontainer, or buildx) and push a tag for CI.

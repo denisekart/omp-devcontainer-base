@@ -1,40 +1,41 @@
 ---
 name: ci-cd-patterns
-description: Guidelines for GitHub Actions, project building, testing, and deployment workflows for .NET and SvelteKit.
+description: "OIDC secrets, official GitHub Actions, dotnet build --no-restore, and deployment workflows for .NET and SvelteKit."
 ---
 
 # CI/CD Patterns
 
-Use this skill when modifying GitHub Actions, build scripts, or deployment configurations.
+## When to use
 
-## Key Principles
-- **Fast Feedback**: Prioritize fast-running unit tests in the main PR loop.
-- **Repeatability**: Ensure that the local dev environment (DevContainer) matches the CI environment as closely as possible.
-- **Security**: Use OIDC for cloud authentication. Never use long-lived secrets in workflows.
+- Modifying GitHub Actions, build scripts, or deployment configurations.
+- Setting up OIDC authentication, caching, or matrix builds.
+- Configuring optimized build/test steps for .NET and SvelteKit projects.
 
-## Guidelines
-- **GitHub Actions**:
-    - Use official actions (e.g., `actions/checkout`, `actions/setup-dotnet`).
-    - Cache `nuget` packages and `node_modules` (or `pnpm` store) to speed up builds.
-    - Use matrix builds for testing across multiple configurations if needed.
-- **Build & Test**:
-    - Use `dotnet build --no-restore` and `dotnet test --no-build` for efficiency.
-    - Run `pnpm check` and `pnpm test` for frontend validation.
-    - Ensure `docker-in-docker` or appropriate runners work in the CI environment for Aspire tests.
-- **Deployment**:
-    - Use `azd` (Azure Developer CLI) patterns for Aspire applications.
-    - Implement Blue/Green or Canary deployments where supported.
-- **Artifacts**: Upload test results and coverage reports for visibility.
+## Rules
 
-## Example: Optimized .NET Build Step
+1. Use official actions (`actions/checkout`, `actions/setup-dotnet`, `actions/setup-node`).
+2. Cache `nuget` packages and `node_modules` (or `pnpm` store) to speed up builds.
+3. Use `dotnet build --no-restore` and `dotnet test --no-build` for efficiency after initial restore.
+4. Use OIDC for cloud authentication — never use long-lived secrets in workflows.
+5. Run `pnpm check` and `pnpm test` for frontend validation.
+
+## Pattern
+
 ```yaml
 - name: Build
   run: dotnet build --configuration Release --no-restore
+
 - name: Test
-  run: dotnet test --configuration Release --no-build --logger "trx;LogFileName=test_results.trx"
+  run: dotnet test --configuration Release --no-build \
+       --logger "trx;LogFileName=test_results.trx"
+
+- name: Upload coverage
+  uses: actions/upload-artifact@v4
+  with { name: coverage, path: coverage/ }
 ```
 
 ## Checklist
+
 - [ ] Are dependencies cached?
 - [ ] Are secrets managed via Action Secrets or OIDC?
 - [ ] Do builds run in non-interactive mode?

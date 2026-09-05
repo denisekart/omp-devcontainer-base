@@ -23,26 +23,27 @@ Headless: `omp -p --plan-yolo` auto-approves and implements.
 
 The `task` tool spawns subagents that work in parallel: `task(agent="backend-expert", task="...")`. Seeded concurrency in `~/.omp/agent/config.yml`: `globalConcurrencyLimit: 20`, `parallel.concurrency: 4`, `maxSubagentDepth: 2`, `forceTopLevelAsync: true`.
 
-Nine agents are baked into the image (`build/library/omp-defaults/agent/agents/`):
+Six custom agents are baked into the image (`build/library/omp-defaults/agent/agents/`):
 
 | Agent | Role |
 |-------|------|
 | `backend-expert` | Specialist for .NET 10, EF Core, and ASP.NET Core Minimal APIs |
-| `code-reviewer` | Specialist for read-only code reviews and impact analysis |
-| `documentation-specialist` | Specialist for technical documentation, diagrams, and CHANGELOG |
 | `dotnet-aspire` | Specialist for .NET Aspire orchestration, service discovery, and distributed observability |
 | `frontend-expert` | Specialist for Svelte 5, Tailwind, and shadcn/ui |
-| `librarian` | Fast, precise info retrieval from codebase and docs |
-| `oracle` | Fleet's architectural reasoning engine for complex decisions and debugging |
-| `plan` | Lead Architect and orchestrator of the agent fleet |
 | `quality-assurance` | Specialist for xUnit, Playwright .NET, and Aspire testing |
+| `documentation-specialist` | Specialist for technical documentation, diagrams, and CHANGELOG |
+| `oracle` | Fleet's architectural reasoning engine for complex decisions and debugging |
+
+Plus the built-in `reviewer` agent (project override of the bundled reviewer with `<project-conventions>` appended).
+
+Built-in task agents shipped in the omp runtime: `task` (generic worker), `scout` (read-only codebase research), `reviewer` (bundled, overridden by project copy), `security-reviewer`, `sonic`. The built-in `librarian`, `designer`, and `init` arrive with the next omp auto-update (the image pulls `@latest` at postStart). Plan mode is native — no custom agent.
 
 ## Memory (Hindsight)
 
 Memory runs on the Hindsight server (port 8888, see [tmux.md](tmux.md) for the self-healing session). Seeded configuration: `memory.backend: hindsight`, `hindsight.apiUrl: http://localhost:8888`, `scoping: per-project-tagged`, `autoRecall: true`, `autoRetain: true`, `recallBudget: high`, `retainMode: last-turn`.
 
 - `recall` — searches prior context before answering or acting
-- `store` — persists durable facts (decisions, conventions, learnings)
+- `retain` — persists durable facts (decisions, conventions, learnings)
 - `reflect` — synthesized answers across many memories
 
 Memory lives on the persistent `~/.hindsight` volume, so it is shared across your projects but scoped per project tag. Lightweight mode: set `memory.backend: mnemopi` (SQLite) in `~/.omp/agent/config.yml`.
@@ -72,52 +73,45 @@ Skills do not need manual invocation: they load automatically when their descrip
 
 ## Baked Skills
 
-All 31 skills are baked into the image (`build/library/omp-defaults/agent/skills/`):
+All 22 skills are baked into the image (`build/library/omp-defaults/agent/skills/`):
 
 **Workflow**
 
 | Skill | Description |
 |-------|-------------|
-| `handoff` | Transitions state between sessions or agents (native `/continue` and `task` blocks) |
+| `delegation` | Guidelines for delegating tasks to agents, coordinating efforts, handoff format, retain/recall/reflect memory discipline |
 | `verification-gate` | Final verification steps to ensure code quality and mitigate AI hallucinations |
-| `subagent-orchestration` | Guidelines for delegating tasks to agents, coordinating their efforts, and merging results |
-| `agent-gotchas` | Common pitfalls and mistakes to avoid when generating or modifying .NET code |
-| `memory-discipline` | Discipline for reading and writing memory — what makes a good learning, tag conventions, handoff firewall |
+| `plan-guidance` | Native plan-mode behavior: research → single approved plan → `.omp/plans/<slug>.md` contract |
 | `solution-navigation` | Efficiently navigating and understanding large .NET solutions, project structures, and dependency graphs |
+| `scaffold-workspace` | Provides the `/scaffold` command to generate recommended project structures |
 
 **.NET**
 
 | Skill | Description |
 |-------|-------------|
-| `backend-conventions` | Guidelines for ASP.NET Core 10, C# 14, Clean Architecture, and EF Core |
-| `background-services` | Hosted services, background jobs, outbox patterns, and graceful shutdown |
-| `caching-strategies` | Output caching, memory caching, distributed caching with Redis, and HybridCache |
-| `ci-cd-patterns` | GitHub Actions, project building, testing, and deployment workflows for .NET and SvelteKit |
-| `concurrency-patterns` | Choosing the right concurrency abstraction: async/await, Channels, Parallel.ForEachAsync, synchronization primitives |
-| `dotnet-architecture-patterns` | Organizing APIs at scale: vertical slices, request pipelines, caching, error handling, idempotency |
-| `dotnet-aspire` | Guidelines for .NET Aspire orchestration, resource management, and distributed application patterns |
+| `dotnet-core` | Modern C# 14 idioms, DI/POCO rules, pitfalls, Clean-Arch layering, MapGroup conventions (formerly `coding-standards`, `agent-gotchas`, `backend-conventions`) |
+| `api-patterns` | ProblemDetails, UseExceptionHandler, AddValidation/FluentValidation, idempotency, rate limiting (formerly `exception-handling`, `validation-patterns`) |
 | `ef-core-specialist` | Advanced EF Core patterns: architecture, performance, migrations, clean data modeling |
-| `exception-handling` | Global error handling, ProblemDetails mapping, and resilience patterns |
+| `dotnet-aspire` | Guidelines for .NET Aspire orchestration, resource management, and distributed application patterns |
+| `caching-strategies` | Output caching, memory caching, distributed caching with Redis, and HybridCache |
+| `concurrency-patterns` | Choosing the right concurrency abstraction: async/await, Channels, Parallel.ForEachAsync, synchronization primitives |
+| `dotnet-architecture-patterns` | Organizing APIs at scale: vertical slices, request pipelines, caching, error handling, idempotency, outbox, graceful shutdown |
+| `background-services` | Hosted services, background jobs, outbox patterns, and graceful shutdown |
+| `performance-analyst` | .NET performance tuning, allocation reduction, async optimization, type design, database access, file I/O streaming |
+| `test-quality` | Measuring and improving test effectiveness: coverage, CRAP score analysis, mutation testing, flaky management |
+| `security-auditor` | ASP.NET Core security, authentication patterns, secrets management, OWASP mitigation |
 
 **Frontend**
 
 | Skill | Description |
 |-------|-------------|
-| `svelte-code-writer` | Svelte 5 code writing guidance; consults Svelte 5/SvelteKit docs before writing components |
-| `svelte-core-bestpractices` | Best practices for writing fast, robust Svelte 5 code |
-| `ui-ux-design-language` | Design system enforcement: colour tokens, typography, spacing, component conventions, accessibility, motion |
-| `frontend-expert` | Comprehensive guidelines for Svelte 5, design system, and modern UI/UX |
+| `svelte5` | Svelte 5 runes rules, doc-lookup workflow, design language enforcement, shadcn usage (formerly `svelte-code-writer`, `svelte-core-bestpractices`, `frontend-expert`, `ui-ux-design-language`) |
 | `playwright-testing` | End-to-end (E2E) testing with Playwright for .NET under Aspire orchestration |
 
 **Quality & Analysis**
 
 | Skill | Description |
 |-------|-------------|
-| `test-quality` | Measuring and improving test effectiveness: coverage, CRAP score analysis, mutation testing |
-| `validation-patterns` | Input validation patterns using .NET 10 AddValidation, FluentValidation, and ProblemDetails |
-| `performance-analyst` | .NET performance tuning, allocation reduction, async optimization, type design, database access |
-| `security-auditor` | ASP.NET Core security, authentication patterns, secrets management, OWASP mitigation |
-| `crap-analysis` | Coverage and CRAP (Change Risk Anti-Patterns) scores via OpenCover/ReportGenerator risk hotspots |
 | `doc-cleanup` | Audits and cleans repo markdown docs for agent-context rot: stale facts, dead paths, history bloat |
 | `technical-writer` | Guidelines for high-quality technical documentation, CHANGELOG management, and code commenting |
 
@@ -126,9 +120,7 @@ All 31 skills are baked into the image (`build/library/omp-defaults/agent/skills
 | Skill | Description |
 |-------|-------------|
 | `csharp-scripts` | Writing and running single-file C# programs via top-level statements and `dotnet <file>.cs` |
-| `coding-standards` | Modern, high-performance C# standards: records, pattern matching, value objects, async/await |
-| `file-handling` | Best practices for file I/O, streaming, and large file processing in .NET |
-| `scaffold-workspace` | Provides the `/scaffold` command to generate recommended project structures |
+| `ci-cd-patterns` | GitHub Actions, project building, testing, and deployment workflows for .NET and SvelteKit |
 
 ## Models & Roles
 

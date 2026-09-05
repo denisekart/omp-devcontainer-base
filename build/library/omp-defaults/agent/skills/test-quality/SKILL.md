@@ -1,38 +1,50 @@
 ---
 name: test-quality
-description: Measuring and improving test effectiveness using code coverage, CRAP score analysis, and mutation testing.
+description: "Measuring and improving test effectiveness using code coverage, CRAP scores, mutation testing, and flaky test management."
 ---
 
 # Test Quality & Analysis
 
-Use this skill when evaluating test coverage, identifying high-risk code (Risk Hotspots), or improving test suite reliability.
+Formerly: test-quality, crap-analysis
 
-## Key Metrics
+## When to use
 
-### 1. Code Coverage
-Standard metric for identifying untested code. Use `coverlet.collector` for Cobertura/OpenCover output.
-- **Run command**: `dotnet test --collect:"XPlat Code Coverage"`
+- Evaluating test coverage before making changes to a codebase.
+- Identifying high-risk code (CRAP hotspots) that needs refactoring or more tests.
+- Setting up coverage collection for a .NET project.
+- Prioritizing which code to test based on cyclomatic complexity.
+- Establishing coverage thresholds for CI/CD pipelines.
+- Managing flaky or non-deterministic tests.
 
-### 2. CRAP Score (Change Risk Anti-Patterns)
-**CRAP = Complexity x (1 - Coverage)^2**
-Combines cyclomatic complexity with test coverage.
-- **Score < 5**: Good.
-- **Score 5-30**: Acceptable but watch complexity.
-- **Score > 30**: High risk; needs refactoring or more tests.
+## Rules
 
-### 3. Mutation Testing (Stryker.NET)
-Evaluates if tests actually catch logic changes. "Kills" mutants to prove test strength.
-- **Run command**: `dotnet stryker`
+1. **CRAP Score = Complexity × (1 − Coverage)²** — combines cyclomatic complexity with test coverage.
+2. **Score < 5**: low risk. **5–30**: acceptable but watch complexity. **> 30**: high risk; needs tests or refactoring.
+3. OpenCover format is required for CRAP score calculation; merge multiple test project results with `ReportGenerator`.
+4. Prioritize testing high-complexity code over low-coverage trivial code.
+5. Exclude generated code, migrations, and benchmarks from coverage via `.runsettings`.
+6. Use `[Retry]` sparingly; fix the root cause of flaky tests.
 
-## Guidelines
-- **OpenCover for CRAP**: CRAP analysis requires the `opencover` format to capture complexity metrics.
-- **Risk Hotspots**: Prioritize testing for code with high cyclomatic complexity, not just low coverage.
-- **Flaky Test Management**: Identify and isolate non-deterministic tests. Use `[Retry]` patterns sparingly; fix the root cause.
-- **Merge Coverage**: Use `ReportGenerator` to merge results from multiple test projects into a single HTML report.
+## Pattern
+
+```bash
+# Run tests with coverage (OpenCover format required for CRAP)
+dotnet test --settings coverage.runsettings \
+  --collect:"XPlat Code Coverage" \
+  --results-directory ./TestResults
+
+# Generate HTML report with CRAP hotspots
+dotnet reportgenerator \
+  -reports:"TestResults/**/coverage.opencover.xml" \
+  -targetdir:"coverage" \
+  -reporttypes:"Html;TextSummary;MarkdownSummaryGithub"
+```
 
 ## Checklist
+
 - [ ] Is code coverage collected during test runs?
 - [ ] Are CRAP scores analyzed for complex methods?
 - [ ] Is mutation testing used for critical business logic?
 - [ ] Are generated code and migrations excluded from coverage?
 - [ ] Is `ReportGenerator` used for human-readable results?
+- [ ] Are flaky tests identified and isolated?

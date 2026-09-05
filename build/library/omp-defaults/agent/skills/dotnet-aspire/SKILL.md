@@ -1,39 +1,28 @@
 ---
 name: dotnet-aspire
-description: Guidelines for .NET Aspire orchestration, resource management, and distributed application patterns.
+description: "AppHost orchestration, resource management, distributed application patterns, and observability."
 ---
 
 # .NET Aspire
 
-Use this skill when managing cloud-native orchestration, defining resources in the AppHost, or configuring service defaults. **Aspire is our primary orchestration tool for both production and testing.**
+## When to use
 
-## Key Principles
-- **Exclusive Orchestration**: Use Aspire for all infrastructure dependencies. **Do not use Testcontainers**; rely on Aspire's `WithReference` and `Aspire.Hosting.Testing`.
-- **Resource Naming**: Use consistent, lowercase names for resources (e.g., `postgres`, `redis`, `api`).
-- **Service Discovery**: Use Aspire's built-in service discovery via endpoint names.
-- **Observability**: Leverage the Aspire Dashboard for traces, logs, metrics, and resource status.
+- Managing cloud-native orchestration, defining resources in the AppHost, or configuring service defaults.
+- Wiring application projects with backing services via `WithReference()` and `WaitFor()`.
+- Setting up distributed testing with `Aspire.Hosting.Testing`.
+- Configuring observability (traces, logs, metrics) and health checks.
 
-## Guidelines
+## Rules
 
-### 1. AppHost Configuration
-- **Backing Services**: Use Aspire Components (PostgreSQL, Redis, RabbitMQ) to manage containers.
-- **Project References**: Use `AddProject<Projects.App_Web>("api")` to wire application projects.
-- **Reference Management**: Map connection strings and environment variables using `WithReference()`.
-- **Startup Ordering**: Use `WaitFor(resource)` to control the sequence of resource startup.
+1. **Exclusive orchestration**: Use Aspire for all infrastructure dependencies — no Testcontainers.
+2. **Resource naming**: Use consistent, lowercase names (`postgres`, `redis`, `api`).
+3. **Service discovery**: Use Aspire's built-in discovery via endpoint names, not hardcoded URLs.
+4. **ServiceDefaults**: Every service project must reference and use the `ServiceDefaults` project.
+5. **Resilience**: Apply retry/circuit-breaker patterns to all outgoing HTTP calls.
+6. **Health checks**: Always register health checks and verify them in the Dashboard.
 
-### 2. ServiceDefaults
-- **Shared Config**: Ensure every service project references and uses the `ServiceDefaults` project.
-- **Health Checks**: Always register health checks in `ServiceDefaults` and verify them in the Dashboard.
-- **Resilience**: Apply standard resilience patterns (retry, circuit breaker) to all outgoing HTTP calls.
+## Pattern
 
-### 3. Distributed Testing
-- **AppHost Testing Framework**: Use `Aspire.Hosting.Testing` to write integration tests.
-- **Verification**: Assert resource availability, healthy status, and inter-service communication.
-
-### 4. Manifests & Deployment
-- **Deployment Manifests**: Use `WithExternalHttpEndpoints()` to mark endpoints as public for tools like `azd`.
-
-## Example: Complex Topology
 ```csharp
 var builder = DistributedApplication.CreateBuilder(args);
 
@@ -41,17 +30,16 @@ var postgres = builder.AddPostgres("pg").WithPgAdmin().AddDatabase("appdb");
 var redis = builder.AddRedis("cache");
 
 var api = builder.AddProject<Projects.App_Web>("api")
-    .WithReference(postgres)
-    .WithReference(redis);
+    .WithReference(postgres).WithReference(redis);
 
 builder.AddProject<Projects.App_Worker>("worker")
-    .WithReference(postgres)
-    .WaitFor(api); // Start worker after API is healthy
+    .WithReference(postgres).WaitFor(api);
 
 builder.Build().Run();
 ```
 
 ## Checklist
+
 - [ ] Are all external resources defined in `AppHost`?
 - [ ] Is service discovery used instead of hardcoded URLs?
 - [ ] Are health checks correctly mapped to `/health`?

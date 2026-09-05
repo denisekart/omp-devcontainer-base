@@ -1,56 +1,29 @@
 ---
 name: caching-strategies
-description: Comprehensive caching patterns for ASP.NET Core APIs. Covers output caching, memory caching, distributed caching with Redis, and HybridCache.
+description: "Comprehensive caching patterns for ASP.NET Core APIs. Covers output caching, memory caching, distributed caching with Redis, and HybridCache."
 ---
 
 # Caching Strategies
 
-Use this skill when optimizing application performance, choosing between memory and distributed caching, or implementing cache invalidation.
+## When to use
 
-## Caching Hierarchy
+- Optimizing application performance by choosing the right caching layer.
+- Implementing cache invalidation after writes (write-through/write-behind).
+- Serving shared data across multiple server instances.
+- Reducing database load for frequently-read, infrequently-changed data.
 
-| Strategy | Scope | Use Case | Latency |
-|----------|-------|----------|---------|
-| **Output Caching** | Server-wide | Full API responses | Low |
-| **Memory Cache** | Single instance | Short-lived, expensive data | Very Low |
-| **Distributed Cache** | Multi-instance | Shared data (Redis) | Medium |
-| **HybridCache (.NET 9+)** | Multi-instance | Best of memory + distributed | Very Low |
+## Rules
 
-## Guidelines
+1. Choose the correct caching level: output cache for HTTP responses, memory cache for single-instance, distributed for multi-instance, HybridCache for the best of both.
+2. Always set `SizeLimit` for memory cache entries to prevent unbounded growth.
+3. Pass `CancellationToken` through all cache operations.
+4. Use tag-based eviction (`EvictByTagAsync`) for surgical invalidation; never rely solely on time-based expiration.
+5. HybridCache (.NET 9+) is the modern standard — handles L1 (memory) and L2 (distributed) automatically.
 
-### 1. Output Caching (Minimal APIs)
-Use for endpoints that don't change frequently.
-
-```csharp
-var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddOutputCache(opt => {
-    opt.AddBasePolicy(b => b.Expire(TimeSpan.FromSeconds(10)));
-});
-
-var app = builder.Build();
-app.UseOutputCache();
-
-app.MapGet("/products", GetProducts).CacheOutput();
-```
-
-### 2. Memory Caching
-Use for expensive computations within a single server instance. Always set a `SizeLimit`.
+## Pattern
 
 ```csharp
-public async Task<Data> GetDataAsync(string key)
-{
-    return await _cache.GetOrCreateAsync(key, async entry => {
-        entry.SetSize(1);
-        entry.SetAbsoluteExpiration(TimeSpan.FromMinutes(10));
-        return await FetchFromDbAsync();
-    });
-}
-```
-
-### 3. HybridCache (.NET 9+)
-The modern standard for .NET caching. Handles L1 (Memory) and L2 (Distributed) automatically.
-
-```csharp
+// HybridCache — modern standard
 public async Task<Product> GetProductAsync(int id, CancellationToken ct)
 {
     return await _hybridCache.GetOrCreateAsync(
@@ -59,14 +32,13 @@ public async Task<Product> GetProductAsync(int id, CancellationToken ct)
         cancellationToken: ct
     );
 }
+
+// Tag-based invalidation
+await _outputCache.EvictByTagAsync("products");
 ```
 
-## Cache Invalidation
-- **Time-based**: Absolute vs Sliding expiration.
-- **Tag-based**: Use `IOutputCacheStore.EvictByTagAsync` for surgical invalidation.
-- **Manual**: Remove specific keys when data changes (Write-through/Write-behind).
-
 ## Checklist
+
 - [ ] Is the correct caching level chosen (L1 vs L2)?
 - [ ] Are size limits set for memory cache?
 - [ ] Is `CancellationToken` passed to cache operations?

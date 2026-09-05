@@ -1,43 +1,51 @@
 ---
 name: performance-analyst
-description: Expertise in .NET performance tuning, allocation reduction, async optimization, type design, and database access patterns.
+description: "Expertise in .NET performance tuning, allocation reduction, async optimization, type design, and database access patterns."
 ---
 
 # Performance Analyst
 
-Use this skill when optimizing bottlenecks, reducing memory usage, or designing high-throughput systems.
+## When to use
 
-## Key Principles
-- **Measure First**: Never optimize without a benchmark (BenchmarkDotNet) or profile data.
-- **Type Design**: Use `readonly struct` for small value types (<= 16 bytes). Seal classes by default to enable JIT devirtualization.
-- **Database Hygiene**: Separate read/write models. Use `AsNoTracking()` for reads. Always apply row limits.
-- **Allocation Awareness**: Use `Span<T>`, `Memory<T>`, and `ArrayPool<T>` in hot paths.
+- Optimizing bottlenecks, reducing memory allocations, or designing high-throughput systems.
+- Deciding between `struct`/`class`, `ValueTask`/`Task`, or synchronous/async I/O.
+- Implementing file uploads, downloads, or disk-based streaming processing.
+- Optimizing LINQ chains, database queries, or JSON serialization paths.
 
-## Guidelines
+## Rules
 
-### 1. Type Design & Performance
-- **Struct vs Class**: Use `struct` for small, immutable types with value semantics.
-- **Sealed Types**: Seal classes to allow the JIT to replace virtual calls with direct calls.
-- **ValueTask**: Use `ValueTask<T>` for async methods that often complete synchronously (e.g., cache hits).
+1. Measure first — never optimize without benchmark or profile data.
+2. Use `readonly struct` for small, immutable value types (≤ 16 bytes); seal classes by default for JIT devirtualization.
+3. Always accept and propagate `CancellationToken`; avoid `.Result`/`.Wait()` deadlocks.
+4. Use `AsNoTracking()` for all read-only queries; separate read/write models in large systems.
+5. Apply row limits (`.Take()`) to every collection query; use `.Any()` not `.Count() > 0`.
+6. Use `ArrayPool<T>.Shared` for temporary buffers in hot paths; stream large files instead of loading into memory.
+7. Use `ValueTask<T>` for async methods that frequently complete synchronously (e.g., cache hits).
+8. Use `Span<T>`/`Memory<T>` in hot paths; prefer source generators for `System.Text.Json` Native AOT.
 
-### 2. LINQ Optimization
-- **Avoid Multiple Enumeration**: Materialize with `.ToList()` or `.ToArray()` if used more than once.
-- **Avoid Count() > 0**: Use `.Any()` for existence checks to allow short-circuiting.
-- **Avoid Premature Materialization**: Don't call `.ToList()` mid-chain in a LINQ query.
+## Pattern
 
-### 3. Database Performance
-- **Batching**: Avoid N+1 queries by using `.Include()` or projection.
-- **No Application-Side Joins**: Perform joins in SQL, not in C#.
-- **Row Limits**: Never return unbounded result sets; always use `.Take(limit)`.
+```csharp
+// Efficient streaming with pooled buffer
+await using var stream = File.OpenRead(path);
+var buffer = ArrayPool<byte>.Shared.Rent(81920);
+try {
+    await stream.CopyToAsync(new MemoryStream(), buffer, ct);
+} finally { ArrayPool<byte>.Shared.Return(buffer); }
 
-### 4. Memory & JSON
-- **Source Generators**: Use `System.Text.Json` source generators for Native AOT and performance.
-- **Buffers**: Use `ArrayPool<T>.Shared` to reuse large arrays.
+// ValueTask for cache hits
+public ValueTask<Data> GetAsync(string key)
+{
+    if (_cache.TryGetValue(key, out var data)) return new(data);
+    return FetchFromDbAsync(key);
+}
+```
 
 ## Checklist
+
 - [ ] Are small, immutable types defined as `readonly struct`?
 - [ ] Are classes `sealed` unless designed for inheritance?
-- [ ] Are database queries using `AsNoTracking()` where appropriate?
-- [ ] Are row limits (Take) applied to all collection queries?
-- [ ] Is `ValueTask` used for methods with frequent synchronous completion?
-- [ ] Are LINQ queries optimized to avoid multiple enumerations?
+- [ ] Is `AsNoTracking()` used for all read-only queries?
+- [ ] Are row limits (`Take`) applied to all collection queries?
+- [ ] Is `ValueTask` used for methods with frequent sync completion?
+- [ ] Are file operations async with streaming and buffer reuse?

@@ -1,58 +1,39 @@
 ---
 name: concurrency-patterns
-description: Choosing the right concurrency abstraction in .NET. Covers async/await, Channels, Parallel.ForEachAsync, and synchronization primitives.
+description: "Choosing the right concurrency abstraction in .NET. Covers async/await, Channels, Parallel.ForEachAsync, and synchronization primitives."
 ---
 
 # .NET Concurrency Patterns
 
-Use this skill when deciding how to handle concurrent operations, managing shared state, or processing data streams.
+## When to use
 
-## Decision Matrix
-1. **Wait for I/O?** -> Use `async/await`.
-2. **Process collection in parallel (CPU-bound)?** -> Use `Parallel.ForEachAsync`.
-3. **Producer/Consumer pattern?** -> Use `System.Threading.Channels`.
-4. **Coordinate multiple async operations?** -> Use `Task.WhenAll` / `Task.WhenAny`.
-5. **Protect shared mutable state?**
-    - Single scalar? -> `Interlocked`.
-    - Key-value lookup? -> `ConcurrentDictionary`.
-    - Async-compatible lock? -> `SemaphoreSlim.WaitAsync`.
-    - Simple, synchronous section? -> `lock`.
+- Deciding how to handle concurrent operations, manage shared state, or process data streams.
+- Choosing between `async/await`, `Parallel.ForEachAsync`, `Channel<T>`, or `Task.WhenAll`.
+- Protecting shared mutable state across threads or async boundaries.
 
-## Guidelines
+## Rules
 
-### 1. Async/Await (Default Choice)
-Always accept `CancellationToken`. Avoid `.Result` or `.Wait()` which cause deadlocks.
+1. **Wait for I/O?** → `async/await`. **CPU-bound parallel?** → `Parallel.ForEachAsync`. **Producer/Consumer?** → `Channel<T>`.
+2. Always accept and propagate `CancellationToken`; avoid `.Result`/`.Wait()` deadlocks.
+3. Use `SemaphoreSlim.WaitAsync()` for async-compatible locks; `lock` for simple synchronous sections.
+4. Use thread-safe collections (`ConcurrentDictionary`, `Interlocked`) for shared mutable state.
+5. `Task.WhenAll` for fan-out; `Task.WhenAny` for first-to-complete.
+
+## Pattern
 
 ```csharp
-public async Task<Data> FetchAsync(string id, CancellationToken ct)
-{
-    var tasks = new[] { _serviceA.Get(id, ct), _serviceB.Get(id, ct) };
-    await Task.WhenAll(tasks);
-    return Combine(tasks[0].Result, tasks[1].Result);
-}
-```
+// Parallel.ForEachAsync — CPU-bound fan-out
+await Parallel.ForEachAsync(items, new ParallelOptions { MaxDegreeOfParallelism = 4 },
+    async (item, ct) => await ProcessAsync(item, ct));
 
-### 2. Channels (Producer/Consumer)
-Use `Channel<T>` for high-performance, non-blocking message passing between threads.
-
-```csharp
+// Channel — producer/consumer
 var channel = Channel.CreateBounded<WorkItem>(100);
-// Producer
 await channel.Writer.WriteAsync(item, ct);
-// Consumer
 await foreach (var item in channel.Reader.ReadAllAsync(ct)) { /* ... */ }
 ```
 
-### 3. Parallel.ForEachAsync
-Efficient parallel processing of collections with controlled degree of parallelism.
-
-```csharp
-await Parallel.ForEachAsync(items, new ParallelOptions { MaxDegreeOfParallelism = 4 }, async (item, ct) => {
-    await ProcessAsync(item, ct);
-});
-```
-
 ## Checklist
+
 - [ ] Is `async/await` used for all I/O?
 - [ ] Is `CancellationToken` propagated through all async calls?
 - [ ] Are thread-safe collections used for shared data?

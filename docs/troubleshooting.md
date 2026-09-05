@@ -104,7 +104,11 @@ Presets: `dotnet-aspire-svelte`, `dotnet-only`, `svelte-only`, `generic`. `write
 
 **Cause:** seeding never overwrites existing files.
 
-**Fix:** NEW default files auto-merge on reseed automatically. For a specific stale file, use the per-file restore from [Restore Defaults](#restore-defaults).
+**Fix:**
+
+- NEW default files auto-merge on reseed automatically.
+- For a specific stale file: delete it under `~/.omp/agent/`, then re-run `bash /usr/local/share/omp-scripts/seed-omp-home.sh` (see [Restore Defaults](#restore-defaults)).
+- For bulk edited/deleted files: run `bash /usr/local/share/omp-scripts/sync-omp-defaults.sh` — it force-syncs only the defaults surface (`agents/`, `skills/`, top-level config files) without touching live state (`sessions/`, `*.db*`, `cache/`). See [Change Flow](architecture.md#change-flow) for details.
 
 ## Port Forwarding
 
