@@ -57,9 +57,9 @@ if [[ "${MODE}" != "--check" && "${MODE}" != "--apply" ]]; then
   exit 1
 fi
 
-# Determine rsync flags
+# Determine rsync flags: --check and --dry-run both use -n (no writes); --apply writes
 RSYNC_FLAGS="-a"
-if [[ "${DRY_RUN}" -eq 1 ]]; then
+if [[ "${MODE}" == "--check" ]]; then
   RSYNC_FLAGS="${RSYNC_FLAGS} -n"
 fi
 

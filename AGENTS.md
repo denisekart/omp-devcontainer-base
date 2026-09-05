@@ -19,9 +19,9 @@ Project-level overrides can be placed in .omp/skills/ and .omp/agents/.
 
 ## Orchestration (main agent = orchestrator, not worker)
 - The main agent plans, delegates, and verifies. It does NOT do grunt work itself: no bulk reads/greps, no file edits, no long-running commands — it coordinates.
-- Delegate independent work to **isolated** subagents via the `task` tool; fire independent items in parallel (`background=true`), sequence only on true dependencies.
+- Delegate independent work to **isolated** subagents via the `task` tool; fire independent items in parallel, sequence only on true dependencies. Track via `hub jobs` / `hub wait`.
 - Each subagent runs in its own context (and, where the filesystem allows, an isolated working-tree clone) — results are summarized back, so the orchestrator's context stays lean.
-- Route by work type: research/lookups→`librarian`, C#/backend→`backend-expert`, Svelte/frontend→`frontend-expert`, tests/QA→`quality-assurance`, Aspire wiring→`dotnet-aspire`, docs→`documentation-specialist`, hard problems/architecture→`oracle`.
+- Route by work type: external docs/API research→`librarian`; codebase research→`scout`; code review→`reviewer`; .NET→`backend-expert`; frontend→`frontend-expert`; Aspire→`dotnet-aspire`; tests/QA→`quality-assurance`; docs→`documentation-specialist`; UI polish→`designer`; hard problems/architecture→`oracle`.
 - Re-delegate a failing subtask (max 3×) before escalating to `oracle`.
 
 ## Project-Scoped Artifacts (always under the project .omp/, never the user home)
