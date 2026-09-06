@@ -51,6 +51,34 @@ if [[ -f "${SENTINEL}" ]]; then
   STORED_HASH="$(cat "${SENTINEL}" 2>/dev/null || true)"
 fi
 
+# --- Knowledge base (pi-knowledge): model cache + env file ---
+# The extension's model cache is <knowledge-dir>/models
+# (~/.omp/knowledge/models, volume-backed). Copy the ONNX models baked into
+# the image, preserving relative paths and never clobbering existing files
+# (idempotent; a user-modified cache file always wins).
+# Runs before the fast path on every boot so that resetting the store
+# (rm -rf ~/.omp/knowledge) re-seeds models + env on the next container
+# creation even when the agent defaults are unchanged.
+KMODELS_SRC="${OMP_KNOWLEDGE_MODELS_SRC:-/usr/local/share/omp-defaults/knowledge-models}"
+if [[ -d "${KMODELS_SRC}" ]]; then
+  mkdir -p "${HOME}/.omp/knowledge/models"
+  while IFS= read -r -d '' f; do
+    rel="${f#./}"
+    dest="${HOME}/.omp/knowledge/models/${rel}"
+    if [[ ! -e "${dest}" ]]; then
+      mkdir -p "$(dirname "${dest}")"
+      cp -p "${KMODELS_SRC}/${rel}" "${dest}"
+      echo "seed-omp-home.sh: added knowledge model ${rel}"
+    fi
+  done < <(cd "${KMODELS_SRC}" && find . -type f -print0 | sort -z)
+fi
+# Seed the knowledge env file (persistent, user-editable); never overwrite.
+KENV_SRC="/usr/local/share/omp-defaults/knowledge.env"
+if [[ ! -f "${HOME}/.omp/knowledge.env" && -f "${KENV_SRC}" ]]; then
+  cp -p "${KENV_SRC}" "${HOME}/.omp/knowledge.env"
+  echo "seed-omp-home.sh: added ~/.omp/knowledge.env from image defaults"
+fi
+
 # Fast path: already seeded AND source unchanged. Still verify the target is
 # intact — a sentinel without a target (deleted/corrupted) must re-merge, not skip.
 if [[ -n "${STORED_HASH}" && "${STORED_HASH}" == "${SOURCE_HASH}" ]]; then

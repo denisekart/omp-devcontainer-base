@@ -62,11 +62,18 @@ echo "install-omp-plugins.sh: installing pinned omp plugins..."
 
 # Pinned plugin names. Resolved versions + integrity digests are captured
 # into the lockfile at install time.
+#
+# WHY UPDATE a pin: bump a version only when the extension's release notes
+# justify it (fixes / schema migrations / OMP compatibility), then rebuild.
+# pi-knowledge provides the local-first RAG knowledge base (knowledge_* tools);
+# its local embedder needs Node 22+ (PI_KNOWLEDGE_NODE_PATH, seeded by
+# seed-omp-home.sh) and pre-seeded ONNX models under ~/.omp/knowledge/models.
 PLUGINS=(
   "pi-loop-police"
   "pi-lens"
   "context-mode"
   "pi-simplify"
+  "pi-knowledge@0.10.0"
 )
 
 # Detect whether the CLI supports the plugin subcommand. If it doesn't (e.g.
@@ -151,11 +158,13 @@ sudo chown -R vscode:vscode "${HOME}/.npm" "${HOME}/.omp" "${HOME}/.bun" "${HOME
 echo "install-omp-plugins.sh: capturing version and integrity data..."
 LOCK_JSON='{}'
 for pkg in "${PLUGINS[@]}"; do
-  PJSON="${HOME}/.omp/plugins/node_modules/${pkg}/package.json"
+  # node_modules entries are unversioned; strip a @pin from the install spec
+  bare="${pkg%@*}"
+  PJSON="${HOME}/.omp/plugins/node_modules/${bare}/package.json"
   VERSION="$(node -p "require('${PJSON}').version" 2>/dev/null || echo unknown)"
-  INTEGRITY="$(sha256sum "${PJSON}" 2>/dev/null | awk '{print $1}')"
+  INTEGRITY="$(sha256sum "${PJSON}" 2>/dev/null | awk '{print $1}' || true)"
   [[ -n "${INTEGRITY}" ]] || INTEGRITY="unknown"
-  LOCK_JSON="$(jq -c --arg p "${pkg}" --arg v "${VERSION}" --arg i "${INTEGRITY}" \
+  LOCK_JSON="$(jq -c --arg p "${bare}" --arg v "${VERSION}" --arg i "${INTEGRITY}" \
     '. + {($p): {version: $v, integrity: $i}}' <<<"${LOCK_JSON}")"
 done
 

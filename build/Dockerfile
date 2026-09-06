@@ -217,6 +217,50 @@ COPY library/omp-defaults /usr/local/share/omp-defaults
 RUN find /usr/local/share/omp-defaults -type f -exec sed -i 's/\r$//' {} + \
     && chown -R vscode:vscode /usr/local/share/omp-defaults
 
+# Baked pi-knowledge ONNX models (local-first RAG). Downloaded at build time so the
+# first-use offline model cache is byte-complete; the build fails loudly if Hugging
+# Face is unreachable or the artifacts change (sha256-pinned). Layout mirrors the
+# transformers.js cache: <cacheDir>/<owner>/<repo>/<file>, where <cacheDir> is
+# PI_KNOWLEDGE_MODEL_CACHE_DIR, seeded on first boot into ~/.omp/knowledge/models
+# by seed-omp-home.sh.
+RUN set -eux; \
+    dest="/usr/local/share/omp-defaults/knowledge-models"; \
+    mkdir -p "$dest/Xenova/multilingual-e5-small/onnx" "$dest/Xenova/ms-marco-MiniLM-L-4-v2/onnx"; \
+    fetch() { curl -fL --retry 3 --retry-delay 2 --create-dirs -o "$2" "$1"; echo "$3  $2" | sha256sum -c -; }; \
+    fetch "https://huggingface.co/Xenova/multilingual-e5-small/resolve/main/config.json" "$dest/Xenova/multilingual-e5-small/config.json" "cb99455288675345e1a4f411438d5d0adbba5fbd3a67ea4fb03c015433b996c1"; \
+    fetch "https://huggingface.co/Xenova/multilingual-e5-small/resolve/main/tokenizer.json" "$dest/Xenova/multilingual-e5-small/tokenizer.json" "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39"; \
+    fetch "https://huggingface.co/Xenova/multilingual-e5-small/resolve/main/tokenizer_config.json" "$dest/Xenova/multilingual-e5-small/tokenizer_config.json" "a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b"; \
+    fetch "https://huggingface.co/Xenova/multilingual-e5-small/resolve/main/onnx/model.onnx" "$dest/Xenova/multilingual-e5-small/onnx/model.onnx" "4aa845c27760e06e9a686b9d8b5d440eae4b6612cd09e5b522b716d3941f77ff"; \
+    fetch "https://huggingface.co/Xenova/ms-marco-MiniLM-L-4-v2/resolve/main/config.json" "$dest/Xenova/ms-marco-MiniLM-L-4-v2/config.json" "fdda01aab3b1610fe167a10ec28f480177145a3c5e0c6a6847e68832d5891bb0"; \
+    fetch "https://huggingface.co/Xenova/ms-marco-MiniLM-L-4-v2/resolve/main/tokenizer.json" "$dest/Xenova/ms-marco-MiniLM-L-4-v2/tokenizer.json" "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66"; \
+    fetch "https://huggingface.co/Xenova/ms-marco-MiniLM-L-4-v2/resolve/main/tokenizer_config.json" "$dest/Xenova/ms-marco-MiniLM-L-4-v2/tokenizer_config.json" "0b29c7bfc889e53b36d9dd3e686dd4300f6525110eaa98c76a5dafceb2029f53"; \
+    fetch "https://huggingface.co/Xenova/ms-marco-MiniLM-L-4-v2/resolve/main/onnx/model.onnx" "$dest/Xenova/ms-marco-MiniLM-L-4-v2/onnx/model.onnx" "f03e07422f9f723146d9e65ee52cef262ac4ada5997dce0f9e72422327cf8252"
+
+# Baked pi-knowledge env defaults (local-first RAG knowledge base).
+# Seeded on first boot into ~/.omp/knowledge.env (persistent, user-editable) and
+# sourced from ~/.zshrc, so it wins over the zshrc floor exports below.
+RUN set -eux; \
+    printf '%s\n' \
+      '# pi-knowledge (npm) configuration - local-first RAG knowledge base.' \
+      '# Seeded on first boot into ~/.omp/knowledge.env (persistent, user-editable)' \
+      '# and sourced from ~/.zshrc, so it wins over the zshrc floor exports.' \
+      '' \
+      '# PI names: the extension reads PI_KNOWLEDGE_* (PI_KNOWLEDGE_DIR also' \
+      '# accepts OMP_KNOWLEDGE_DIR as a fallback). Exported because the file is' \
+      '# sourced into the interactive shell.' \
+      'export PI_KNOWLEDGE_DIR="$HOME/.omp/knowledge"' \
+      'export PI_KNOWLEDGE_NODE_PATH="/usr/bin/node"' \
+      '' \
+      '# Optional: DGX Spark embedding model (needs an embedding model on the' \
+      '# LiteLLM proxy; /v1/embeddings must work). With' \
+      '# PI_KNOWLEDGE_EMBEDDING_API_FALLBACK=local the extension degrades to the' \
+      '# local ONNX embedder if the proxy is unavailable.' \
+      '# export PI_KNOWLEDGE_EMBEDDING="openai:qwen3-embedding-8b"' \
+      '# export PI_KNOWLEDGE_EMBEDDING_BASE_URL="http://spark.orca-hue.ts.net:4000/v1"' \
+      '# export PI_KNOWLEDGE_EMBEDDING_API_FALLBACK="local"' \
+      > /usr/local/share/omp-defaults/knowledge.env; \
+    chown -R vscode:vscode /usr/local/share/omp-defaults
+
 # Baked scripts
 COPY scripts /usr/local/share/omp-scripts
 RUN find /usr/local/share/omp-scripts -type f -exec sed -i 's/\r$//' {} + \
@@ -272,6 +316,14 @@ RUN mkdir -p ~/.zsh_history_vol \
     && printf '%s\n' 'export OPENAI_API_KEY=anything' >> ~/.zshrc \
     && printf '%s\n' 'export LITELLM_API_KEY=anything' >> ~/.zshrc \
     && printf '%s\n' 'export PATH=$BUN_INSTALL/bin:$DOTNET_ROOT:/home/vscode/.dotnet/tools:/home/vscode/.local/bin:/usr/local/bin:$PATH' >> ~/.zshrc \
+    && printf '%s\n' '' >> ~/.zshrc \
+    && printf '%s\n' '# pi-knowledge (local-first RAG): deterministic floor exports. The persistent,' >> ~/.zshrc \
+    && printf '%s\n' '# user-editable override lives in ~/.omp/knowledge.env (seeded on first boot),' >> ~/.zshrc \
+    && printf '%s\n' '# sourced last, and wins when set. PI names: the extension reads' >> ~/.zshrc \
+    && printf '%s\n' '# PI_KNOWLEDGE_* (PI_KNOWLEDGE_DIR also accepts OMP_KNOWLEDGE_DIR).' >> ~/.zshrc \
+    && printf '%s\n' 'export PI_KNOWLEDGE_DIR="$HOME/.omp/knowledge"' >> ~/.zshrc \
+    && printf '%s\n' 'export PI_KNOWLEDGE_NODE_PATH="/usr/bin/node"' >> ~/.zshrc \
+    && printf '%s\n' '[ -f "$HOME/.omp/knowledge.env" ] && . "$HOME/.omp/knowledge.env"' >> ~/.zshrc \
     && printf '%s\n' '' >> ~/.zshrc \
     && printf '%s\n' '# ── Prevent background job output from corrupting TUI displays ──────────' >> ~/.zshrc \
     && printf '%s\n' '# (omp, vim, htop, etc. all use alternate screen buffers; output' >> ~/.zshrc \
