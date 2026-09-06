@@ -6,7 +6,7 @@ Pinned versions and integrity digests are captured at install time into `~/.omp/
 
 ## Adopted Plugins
 
-These 4 plugins are installed globally by default via `omp plugin install` during container initialization (`install-omp-plugins.sh`).
+These 5 plugins are installed globally by default via `omp plugin install` during container initialization (`install-omp-plugins.sh`).
 
 | Plugin | npm | GitHub | Purpose | Satisfies |
 |--------|-----|--------|---------|-----------|
@@ -14,6 +14,7 @@ These 4 plugins are installed globally by default via `omp plugin install` durin
 | `pi-lens` | [npmjs.com/package/pi-lens](https://npmjs.com/package/pi-lens) | [github.com/apmantza/pi-lens](https://github.com/apmantza/pi-lens) | Real-time code feedback: LSP, linters, formatters, type-checking | Lens/context feedback; reinforces LSP integration |
 | `context-mode` | [npmjs.com/package/context-mode](https://npmjs.com/package/context-mode) | [github.com/mksglu/context-mode](https://github.com/mksglu/context-mode) | MCP plugin that saves up to 98% of context window | Context-mode request, directly |
 | `pi-simplify` | [npmjs.com/package/pi-simplify](https://npmjs.com/package/pi-simplify) | [github.com/can1357/oh-my-pi](https://github.com/can1357/oh-my-pi) | Code and output simplification, reducing noise and boilerplate | Output streamlining and simplification |
+| `pi-knowledge@0.10.0` | [npmjs.com/package/pi-knowledge](https://npmjs.com/package/pi-knowledge) | [github.com/nczz/pi-knowledge](https://github.com/nczz/pi-knowledge) | Local-first RAG knowledge base (`knowledge_*` tools): hybrid semantic + keyword search over project files, ONNX embedding + reranking, offline via baked models | Per-workspace KB search before re-reading files; docs: `knowledge-base` skill |
 
 To reinstall after removing the sentinel:
 ```bash
