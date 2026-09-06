@@ -36,8 +36,8 @@ if ! command -v omp >/dev/null 2>&1; then
 fi
 
 # Rebuild reconciliation: capture the omp version now (OMP_CMD resolved above);
-# the sentinel written at the end records it, so a rebuilt image (new omp)
-# fails the idempotency check below and triggers a plugin reinstall.
+# the sentinel written at the end records "<omp version>|<plugin-set sha256>", so
+# a rebuilt image (new omp or changed PLUGINS) triggers a plugin reinstall.
 CURRENT_OMP_VER="$("${OMP_CMD}" --version 2>/dev/null | head -1 || echo unknown)"
 
 # Gate 2: verify seed-omp-home.sh already ran (config.yml must exist)
@@ -46,19 +46,6 @@ if [[ ! -f "${CONFIG_CHECK}" ]]; then
   echo "install-omp-plugins.sh: seed-omp-home.sh must run before this script." >&2
   exit 1
 fi
-
-# Idempotency check: skip only when the sentinel exists AND records the current
-# omp version; otherwise (missing sentinel, or omp version changed) reinstall.
-if [[ -f "${SENTINEL}" ]]; then
-  RECORDED="$(cat "${SENTINEL}" 2>/dev/null || echo '')"
-  if [[ "${RECORDED}" == "${CURRENT_OMP_VER}" ]]; then
-    echo "install-omp-plugins.sh: plugins already installed (omp ${CURRENT_OMP_VER} unchanged). Skipping."
-    exit 0
-  fi
-  echo "install-omp-plugins.sh: omp version changed ('${RECORDED}' -> '${CURRENT_OMP_VER}'); reinstalling plugins."
-fi
-
-echo "install-omp-plugins.sh: installing pinned omp plugins..."
 
 # Pinned plugin names. Resolved versions + integrity digests are captured
 # into the lockfile at install time.
@@ -76,6 +63,24 @@ PLUGINS=(
   "pi-knowledge@0.10.0"
 )
 
+# Idempotency check: skip only when the sentinel exists AND records the current
+# omp version AND the pinned plugin set is unchanged. The sentinel stores
+# "<omp version>|<sha256 of pinned plugin specs>" so a rebuild that adds or
+# drops a pin triggers reinstall on existing volumes (reinstall is
+# idempotent: `omp plugin install` of an already-installed pin is a fast no-op).
+# A legacy sentinel (bare version) differs from the new format and triggers
+# exactly one reinstall.
+CURRENT_SENTINEL="${CURRENT_OMP_VER}|$(printf '%s\n' "${PLUGINS[@]}" | sha256sum | awk '{print $1}')"
+if [[ -f "${SENTINEL}" ]]; then
+  RECORDED="$(cat "${SENTINEL}" 2>/dev/null || echo '')"
+  if [[ "${RECORDED}" == "${CURRENT_SENTINEL}" ]]; then
+    echo "install-omp-plugins.sh: plugins already installed (omp ${CURRENT_OMP_VER}, plugin set unchanged). Skipping."
+    exit 0
+  fi
+  echo "install-omp-plugins.sh: state changed ('${RECORDED:-<none>}' -> '${CURRENT_SENTINEL}'); reinstalling plugins."
+fi
+
+echo "install-omp-plugins.sh: installing pinned omp plugins..."
 # Detect whether the CLI supports the plugin subcommand. If it doesn't (e.g.
 # an old binary), degrade to a global npm install — which also needs root
 # (NodeSource Node prefix is /usr).
@@ -177,6 +182,6 @@ if [[ ${#FAILED[@]} -gt 0 ]]; then
   echo "install-omp-plugins.sh: continuing devcontainer initialization..."
 else
   # Sentinel only after a fully successful install + lockfile write
-  printf '%s\n' "${CURRENT_OMP_VER}" > "${SENTINEL}"
+  printf '%s\n' "${CURRENT_SENTINEL}" > "${SENTINEL}"
   echo "install-omp-plugins.sh: done. All plugins installed, lockfile written to ${LOCKFILE}, sentinel created."
 fi
