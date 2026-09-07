@@ -132,7 +132,9 @@ subagents:
 # each other and keeps their churn out of the orchestrator's live tree.
 task:
   isolation:
-    mode: "auto"
+    enabled: true
+  enableEffort: true
+  enableLsp: true
 
 agents:
   customDirectories:
@@ -141,3 +143,42 @@ agents:
 
 tools:
   format: "native"
+
+# ---------------------------------------------------------------------------
+# User defaults (ported 2026-09-07 from the live ~/.omp/agent/config.yml —
+# /settings output of this devcontainer). ONLY keys whose value differs from
+# omp's built-in default are listed; everything else intentionally stays at
+# the built-in default. To change a default for all future instances, edit the
+# value here and rebuild the image. Existing instances are unaffected
+# (seed-omp-home.sh never overwrites ~/.omp/agent/config.yml).
+# ---------------------------------------------------------------------------
+steeringMode: all
+interruptMode: wait
+error:
+  notify: "on"
+hideThinkingBlock: true
+statusLine:
+  preset: full
+  separator: pipe
+  compactThinkingLevel: false
+display:
+  showTokenUsage: true
+  showTurnTime: true
+features:
+  unexpectedStopDetection: smart
+compaction:
+  methodOrder:
+    - snapcompact
+    - handoff
+    - soft
+    - shake
+    - remote
+  handoffSaveToDisk: true
+autolearn:
+  enabled: true
+  autoContinue: true
+astGrep:
+  enabled: true
+commands:
+  enableClaudeProject: false
+  enableOpencodeProject: false

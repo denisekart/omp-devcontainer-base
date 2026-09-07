@@ -21,6 +21,13 @@
         "PUPPETEER_EXECUTABLE_PATH": "/usr/local/puppeteer-chromium",
         "DOCKER_CONTAINER": "true"
       }
+    },
+    "context-mode": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "/home/vscode/.omp/plugins/node_modules/context-mode/server.bundle.mjs"
+      ]
     }
   }
 }
