@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "paths": {
+      "@oh-my-pi/pi-coding-agent/extensibility/extensions": [
+        "/usr/local/install/global/node_modules/@oh-my-pi/pi-coding-agent/dist/types/extensibility/extensions/types"
+      ]
+    }
+  },
+  "include": [
+    "agent/extensions/telegram-bridge.ts",
+    "agent/extensions/tg-bridge-types.ts"
+  ]
+}

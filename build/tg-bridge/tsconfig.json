@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "skipLibCheck": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "declaration": false,
+    "sourceMap": false,
+    "types": [],
+    "lib": ["ES2024"]
+  },
+  "include": [
+    "daemon.ts",
+    "selftest.ts",
+    "lib/**/*.ts",
+    "node.d.ts"
+  ]
+}

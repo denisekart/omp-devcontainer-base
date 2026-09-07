@@ -267,6 +267,12 @@ RUN find /usr/local/share/omp-scripts -type f -exec sed -i 's/\r$//' {} + \
     && chown -R vscode:vscode /usr/local/share/omp-scripts \
     && chmod +x /usr/local/share/omp-scripts/*.sh
 
+# Baked tg-bridge (Telegram bridge daemon + supervisor for mobile omp control)
+COPY tg-bridge /usr/local/share/tg-bridge
+RUN find /usr/local/share/tg-bridge -type f -exec sed -i 's/\r$//' {} + \
+    && chown -R vscode:vscode /usr/local/share/tg-bridge \
+    && chmod +x /usr/local/share/tg-bridge/supervisor.sh
+
 USER vscode
 
 # User-level tools
