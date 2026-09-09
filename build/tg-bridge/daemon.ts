@@ -1,5 +1,5 @@
 // daemon.ts — tg-bridge entry point.
-// Wires the lib modules (telegram client, socket server, task manager, render
+// Wires the lib modules (telegram client, socket server, render
 // engine, bindings/replay state) into a single long-polling daemon.
 //
 // Outbound-only: long-poll HTTPS to Telegram + a unix-socket listener for the
@@ -38,7 +38,6 @@ import {
   type TelegramUpdate,
 } from "./lib/telegram";
 import { SocketManager, type QuestionFrame, type SessionState } from "./lib/socket";
-import { TaskManager } from "./lib/tasks";
 import { RenderEngine } from "./lib/render";
 
 // ─── Persistent helpers ──────────────────────────────────────────────────────
@@ -79,7 +78,6 @@ interface Daemon {
   apiBase: string;
   log: ReturnType<typeof createWriteStream>;
   client: TelegramClient;
-  tasks: TaskManager;
   socket: SocketManager;
   render: RenderEngine;
   bindings: Map<number, Binding>;
@@ -88,7 +86,6 @@ interface Daemon {
   qCounter: number;
   offset: number;
   socketPath: string;
-  ompBin: string;
 }
 
 function logMsg(d: Daemon, msg: string): void {
@@ -106,6 +103,12 @@ function topicForCwd(d: Daemon, cwd: string): number | undefined {
     if (b.cwd === cwd) return topicId;
   }
   return undefined;
+}
+/** Next unused topic id: max(existing topic ids) + 1. */
+function nextTopicId(bindings: Map<number, Binding>): number {
+  let max = 0;
+  for (const k of bindings.keys()) if (k > max) max = k;
+  return max + 1;
 }
 
 // ─── Telegram send helpers ───────────────────────────────────────────────────
@@ -179,15 +182,14 @@ async function handleCommand(
         d,
         [
           "Commands (this topic):",
-          "/start <prompt> — spawn an omp task in this workspace",
-          "/stop — abort + kill the running task",
-          "/restart [prompt] — kill + resume last session",
-          "/resume — resume last session (fresh process)",
-          "/status — daemon + task status",
+          "/status — daemon + session status",
           "/abort — abort the current turn (process keeps running)",
           "/bind <cwd> — bind this topic to a workspace",
           "/replay [N] — resend last N progress entries",
           "/ask <question> — pose a question with inline buttons",
+          "/pair <cwd> — pair this topic with a workspace (auto-bind)",
+          "/unpair — unbind this topic",
+          "/remote on|off — toggle remote for this topic",
           "Free text — steer (running) / new turn (idle)",
           "/pair /unpair — DM pairing (admin)",
         ].join("\n"),
@@ -215,55 +217,17 @@ async function handleCommand(
 
     case "/status": {
       const b = binding;
-      const task = cwd ? d.tasks.getInfo(cwd) : undefined;
       const session = cwd ? d.socket.getSession(cwd) : undefined;
+      const remoteOn = session?.remoteOn ?? false;
+      const sessionCount = d.socket.getSessionCount();
       const lines = [
         `Workspace: ${b?.cwd ?? "(unbound)"}`,
-        `Enabled: ${b?.remoteEnabled ?? true}  Verbosity: ${b?.verbosity ?? "mid"}`,
-        `Task: ${task ? `running (pid ${task.pid})` : "none"}`,
+        `Remote: ${remoteOn ? "on" : "off"}  Verbosity: ${b?.verbosity ?? "mid"}`,
         `Live session: ${session ? `${session.sessionId} (turn ${session.turnLive ? "live" : "idle"})` : "none"}`,
+        `Active sessions: ${sessionCount}`,
         `Last event: ${b ? new Date(b.lastEventAt).toISOString() : "never"}`,
       ];
       await tgSend(d, lines.join("\n"), topicId);
-      return;
-    }
-
-    case "/start": {
-      if (!cwd) {
-        await tgSend(d, "This topic is not bound. Use /bind <cwd> first.", topicId);
-        return;
-      }
-      if (!arg) {
-        await tgSend(d, "Usage: /start <prompt>", topicId);
-        return;
-      }
-      if (d.tasks.getActiveCount() >= d.config.maxConcurrent) {
-        await tgSend(d, `Max concurrent tasks (${d.config.maxConcurrent}) reached.`, topicId);
-        return;
-      }
-      const task = d.tasks.spawn(cwd, arg);
-      if (!task) {
-        await tgSend(d, "A task is already running for this workspace.", topicId);
-        return;
-      }
-      await tgSend(d, `Started task (pid ${task.pid}): ${arg}`, topicId);
-      return;
-    }
-
-    case "/stop": {
-      if (!cwd) {
-        await tgSend(d, "This topic is not bound.", topicId);
-        return;
-      }
-      // Prefer socket abort (graceful); kill as fallback.
-      const session = d.socket.getSession(cwd);
-      if (session) d.socket.sendFrame(cwd, { type: "abort" });
-      const killed = d.tasks.kill(cwd);
-      await tgSend(
-        d,
-        killed ? "Task stopped." : "No daemon-owned task; sent abort to live session.",
-        topicId,
-      );
       return;
     }
 
@@ -278,27 +242,6 @@ async function handleCommand(
         sent ? "Abort sent to live session." : "No live session to abort.",
         topicId,
       );
-      return;
-    }
-
-    case "/restart":
-    case "/resume": {
-      if (!cwd) {
-        await tgSend(d, "This topic is not bound.", topicId);
-        return;
-      }
-      const b = d.bindings.get(topicId);
-      const prompt =
-        cmd === "/restart" && arg ? arg : b?.lastSessionFile ? "(resuming last session)" : "";
-      d.tasks.kill(cwd);
-      const task = b?.lastSessionFile
-        ? d.tasks.spawn(cwd, prompt || "Continue.", b.lastSessionFile)
-        : d.tasks.spawn(cwd, prompt || "Continue.");
-      if (!task) {
-        await tgSend(d, "Could not (re)start task.", topicId);
-        return;
-      }
-      await tgSend(d, `${cmd === "/restart" ? "Restarted" : "Resumed"} (pid ${task.pid}).`, topicId);
       return;
     }
 
@@ -319,7 +262,7 @@ async function handleCommand(
       // Pose a free-form question with inline buttons. The tap routes back as an
       // `answer` frame to the live session for this workspace's cwd.
       const title = arg || "(no question text)";
-      const options = cwd ? ["Confirm"] : ["Confirm"];
+      const options = ["Confirm"];
       const handle = String(++d.qCounter);
       d.pending.set(handle, {
         cwd: cwd ?? "",
@@ -332,6 +275,62 @@ async function handleCommand(
         return;
       }
       await publishQuestion(d, topicId, title, options, handle);
+      return;
+    }
+
+    case "/pair": {
+      if (!arg) {
+        await tgSend(d, "Usage: /pair <cwd>", topicId);
+        return;
+      }
+      if (!existsSync(arg)) {
+        await tgSend(d, `Path does not exist: ${arg}`, topicId);
+        return;
+      }
+      setBindingForTopic(d.bindings, topicId, arg);
+      updateBindingEvent(d.bindings, topicId);
+      writeBindings(d.bindings);
+      logMsg(d, `paired topic ${topicId} -> ${arg}`);
+      await tgSend(d, `Paired topic to ${arg} (${basename(arg)})`, topicId);
+      return;
+    }
+
+    case "/unpair": {
+      d.bindings.delete(topicId);
+      writeBindings(d.bindings);
+      logMsg(d, `unpaired topic ${topicId}`);
+      await tgSend(d, `Unpaired topic ${topicId}.`, topicId);
+      return;
+    }
+
+    case "/remote": {
+      if (!cwd) {
+        await tgSend(d, "This topic is not bound.", topicId);
+        return;
+      }
+      const onOff = arg?.toLowerCase();
+      if (onOff !== "on" && onOff !== "off") {
+        await tgSend(d, "Usage: /remote on|off", topicId);
+        return;
+      }
+      const session = d.socket.getSession(cwd);
+      if (session) {
+        session.remoteOn = onOff === "on";
+      }
+      const b = d.bindings.get(topicId);
+      if (b) {
+        b.remoteOn = onOff === "on";
+        updateBindingEvent(d.bindings, topicId, session?.sessionId, session?.sessionFile);
+        writeBindings(d.bindings);
+      }
+      if (session) {
+        d.socket.sendFrame(cwd, {
+          type: "config",
+          enabled: onOff === "on",
+          verbosity: session.verbosity,
+        });
+      }
+      await tgSend(d, `Remote ${onOff} for ${cwd}.`, topicId);
       return;
     }
 
@@ -357,7 +356,7 @@ async function handleMessage(d: Daemon, msg: TelegramMessage): Promise<void> {
   }
 
   const text = msg.text ?? "";
-  const isGroup = msg.chat.id === d.config.groupId;
+  const isGroup = msg.chat.type !== "private" && msg.chat.id === d.config.groupId;
 
   // DM pairing commands (not in the group).
   if (!isGroup) {
@@ -368,7 +367,7 @@ async function handleMessage(d: Daemon, msg: TelegramMessage): Promise<void> {
         writeConfigLive(c);
         logMsg(d, `paired user ${from}`);
       }
-      await tgSend(d, `Paired user ${from}.`, Number(msg.chat.id));
+      await tgSend(d, `Pairing complete for user ${from}. You are now in the whitelist.`, Number(msg.chat.id));
       return;
     }
     if (text.trim().startsWith("/unpair")) {
@@ -395,24 +394,23 @@ async function handleMessage(d: Daemon, msg: TelegramMessage): Promise<void> {
 
   // Free text → prompt to the live session for this topic's cwd.
   const binding = d.bindings.get(topicId);
-  if (!binding || !binding.remoteEnabled) {
-    await tgSend(d, "This topic is not bound (or remote is disabled).", topicId);
+
+  // Auto-pair: if whitelist is empty and this is the first group message,
+  // bind this topic to the cwd from the binding (if any).
+  if (!binding && cfg !== null && cfg.allowedUserIds.length === 0) {
+    // No binding exists; look for a cwd from an existing binding's cwd
+    // that matches this message's context. For now, skip auto-pair without
+    // a cwd hint — the user must /bind first.
+  }
+
+  if (!binding) {
+    await tgSend(d, "This topic is not bound. Use /bind <cwd> first.", topicId);
     return;
   }
+
   const session = d.socket.getSession(binding.cwd);
-  if (!session) {
-    // No live session: if a daemon task is running, we can't steer it (it's a
-    // spawned `omp -p` child with no interactive socket). Report status.
-    const task = d.tasks.getInfo(binding.cwd);
-    if (task) {
-      await tgSend(
-        d,
-        `A task is running (pid ${task.pid}) but has no interactive session to steer. Use /status.`,
-        topicId,
-      );
-    } else {
-      await tgSend(d, `No live session for ${binding.cwd}. Use /start <prompt> to launch one.`, topicId);
-    }
+  if (!session || !session.remoteOn) {
+    await tgSend(d, "This topic is not bound (or remote is off).", topicId);
     return;
   }
   const deliverAs = session.turnLive ? ("steer" as const) : ("new" as const);
@@ -436,9 +434,9 @@ function buildSocketCallbacks(d: Daemon) {
       if (topicId !== undefined) {
         const b = d.bindings.get(topicId);
         if (b) {
-          // Seed session state from the persisted binding.
-          state.enabled = b.remoteEnabled;
-          state.verbosity = b.verbosity;
+          // Seed session state from the persisted binding (remoteOn defaults false).
+          state.remoteOn = b.remoteOn ?? false;
+          state.verbosity = b.verbosity ?? "mid";
           updateBindingEvent(d.bindings, topicId, state.sessionId, state.sessionFile);
           writeBindings(d.bindings);
         }
@@ -446,17 +444,16 @@ function buildSocketCallbacks(d: Daemon) {
       // Answer the extension's config_request with the workspace's persisted state.
       d.socket.sendFrame(cwd, {
         type: "config",
-        enabled: state.enabled,
+        enabled: state.remoteOn,
         verbosity: state.verbosity,
       });
-      logMsg(d, `hello from ${cwd} (${state.sessionId}) topic=${topicId ?? "none"}`);
+      logMsg(d, `hello from ${cwd} (${state.sessionId}) topic=${topicId ?? "none"} remoteOn=${state.remoteOn}`);
     },
 
     onProgress: (cwd: string, kind: string, data: unknown) => {
       const topicId = topicForCwd(d, cwd);
       const session = d.socket.getSession(cwd);
-      const b = topicId !== undefined ? d.bindings.get(topicId) : undefined;
-      if (topicId === undefined || !session || !session.enabled) return;
+      if (topicId === undefined || !session || !session.remoteOn) return;
       const verbosity = session.verbosity;
       // Replay capture: keep the rendered text for /replay continuity.
       if (kind === "message") {
@@ -477,13 +474,12 @@ function buildSocketCallbacks(d: Daemon) {
         const text = typeof data === "string" ? data : JSON.stringify(data);
         void renderLine(d, topicId, text).catch(() => {});
       }
-      void b; // b used for future per-binding render tuning
     },
 
     onQuestion: (cwd: string, q: QuestionFrame) => {
       const topicId = topicForCwd(d, cwd);
       const session = d.socket.getSession(cwd);
-      if (topicId === undefined || !session || !session.enabled) return;
+      if (topicId === undefined || !session || !session.remoteOn) return;
       const handle = String(++d.qCounter);
       d.pending.set(handle, { cwd, questionId: q.id, options: q.options ?? ["Confirm"] });
       void publishQuestion(d, topicId, q.title, q.options ?? ["Confirm"], handle).catch((e) =>
@@ -492,14 +488,127 @@ function buildSocketCallbacks(d: Daemon) {
     },
 
     onConfigUpdate: (cwd: string, enabled?: boolean, verbosity?: Verbosity) => {
+      const session = d.socket.getSession(cwd);
+      if (session && enabled !== undefined) session.remoteOn = enabled;
+      if (session && verbosity !== undefined) session.verbosity = verbosity;
       const topicId = topicForCwd(d, cwd);
-      if (topicId === undefined) return;
-      const b = d.bindings.get(topicId);
-      if (!b) return;
-      if (enabled !== undefined) b.remoteEnabled = enabled;
-      if (verbosity !== undefined) b.verbosity = verbosity;
+      if (topicId !== undefined) {
+        const b = d.bindings.get(topicId);
+        if (b) {
+          if (enabled !== undefined) b.remoteOn = enabled;
+          if (verbosity !== undefined) b.verbosity = verbosity;
+          updateBindingEvent(d.bindings, topicId, session?.sessionId, session?.sessionFile);
+        }
+      } else {
+        // No binding for this cwd yet — create one so the persisted state survives.
+        const newTopicId = nextTopicId(d.bindings);
+        setBindingForTopic(d.bindings, newTopicId, cwd);
+        const b = d.bindings.get(newTopicId);
+        if (b) {
+          if (enabled !== undefined) b.remoteOn = enabled;
+          if (verbosity !== undefined) b.verbosity = verbosity;
+          updateBindingEvent(d.bindings, newTopicId, session?.sessionId, session?.sessionFile);
+        }
+      }
       writeBindings(d.bindings);
-      logMsg(d, `config_update ${cwd}: enabled=${b.remoteEnabled} verbosity=${b.verbosity}`);
+      logMsg(d, `config_update ${cwd}: remoteOn=${enabled ?? "unchanged"} verbosity=${session?.verbosity ?? "unchanged"}`);
+    },
+
+    onControl: (type: string, frame: Record<string, unknown>) => {
+      if (type === "config_set") {
+        const topicNum = Number(frame.topicId);
+        if (!Number.isFinite(topicNum)) {
+          logMsg(d, `config_set: missing topicId (${JSON.stringify(frame)})`);
+          return;
+        }
+        const enabled =
+          typeof frame.remoteOn === "boolean"
+            ? frame.remoteOn
+            : typeof frame.enabled === "boolean"
+              ? frame.enabled
+              : undefined;
+        const verbosity =
+          typeof frame.verbosity === "string" ? (frame.verbosity as Verbosity) : undefined;
+        const existing = d.bindings.get(topicNum);
+        if (existing) {
+          if (enabled !== undefined) existing.remoteOn = enabled;
+          if (verbosity !== undefined) existing.verbosity = verbosity;
+          existing.lastEventAt = Date.now();
+        } else {
+          // Topic not bound yet — create a minimal binding so the config persists.
+          const cwdHint =
+            typeof frame.cwd === "string" ? frame.cwd : d.stateDir;
+          setBindingForTopic(d.bindings, topicNum, cwdHint);
+          const created = d.bindings.get(topicNum);
+          if (created) {
+            if (enabled !== undefined) created.remoteOn = enabled;
+            if (verbosity !== undefined) created.verbosity = verbosity;
+          }
+        }
+        writeBindings(d.bindings);
+        logMsg(d, `config_set topic=${topicNum} remoteOn=${enabled ?? "unchanged"} verbosity=${verbosity ?? "unchanged"}`);
+        return;
+      }
+      if (type === "config_reload") {
+        const cfg = readConfig();
+        if (cfg) {
+          d.config = cfg;
+          logMsg(d, "config_reload: config re-read from disk");
+        } else {
+          logMsg(d, "config_reload: config.json not readable, keeping current");
+        }
+        return;
+      }
+      if (type === "pair" || type === "pair_validate" || type === "pair_validate_group") {
+        void (async () => {
+          const token = typeof frame.token === "string" ? frame.token : "";
+          if (!token) {
+            logMsg(d, `pair: missing token (${type})`);
+            return;
+          }
+          const probe = new TelegramClient(
+            { token, apiBase: d.apiBase },
+            { onLog: () => {}, onLogError: () => {}, onReply: () => {}, onUpdate: () => {} },
+          );
+          let ok = false;
+          try {
+            const me = await probe.getMe();
+            ok = me !== null;
+          } catch (err) {
+            ok = false;
+            logMsg(d, `pair: getMe failed: ${(err as Error).message}`);
+          }
+          if (ok && type === "pair") {
+            const groupId =
+              typeof frame.groupId === "number"
+                ? frame.groupId
+                : frame.groupId === undefined
+                  ? d.config.groupId
+                  : Number(frame.groupId) || d.config.groupId;
+            const cfg: Config = {
+              botToken: token,
+              groupId,
+              allowedUserIds: [],
+              editIntervalMs: d.config.editIntervalMs,
+            };
+            writeConfigLive(cfg);
+            d.config = cfg;
+            logMsg(d, `pair: config.json written (group=${groupId})`);
+          }
+          if (ok) {
+            for (const session of d.socket.allSessions.values()) {
+              d.socket.sendFrame(session.cwd, { type: "pair_done", success: true });
+            }
+          } else {
+            for (const session of d.socket.allSessions.values()) {
+              d.socket.sendFrame(session.cwd, { type: "pair_done", success: false });
+            }
+            logMsg(d, `pair: token validation failed (${type})`);
+          }
+        })();
+        return;
+      }
+      logMsg(d, `control: unknown type ${type}`);
     },
 
     onLog: (m: string) => logMsg(d, `[socket] ${m}`),
@@ -542,7 +651,18 @@ async function pollLoop(d: Daemon): Promise<void> {
   while (!stopPolling) {
     let updates: TelegramUpdate[];
     try {
-      updates = await d.client.getUpdates(d.offset, 28);
+      // 25s long-poll timeout + 30s fetch timeout via AbortController.
+      // Telegram blocks server-side until an update arrives or the timeout
+      // elapses, so this loop never busy-polls. It must run even with zero
+      // active sessions: bootstrap commands (/bind, /pair, /unpair) and the
+      // 409-conflict check are only reachable while the long-poll is live.
+      const controller = new AbortController();
+      const fetchTimeout = setTimeout(() => controller.abort(), 30000);
+      try {
+        updates = await d.client.getUpdates(d.offset, 25, undefined, controller.signal);
+      } finally {
+        clearTimeout(fetchTimeout);
+      }
     } catch (err) {
       if (err instanceof ConflictError) {
         logMsg(d, "409 conflict: another instance is polling this token. Exiting.");
@@ -552,6 +672,7 @@ async function pollLoop(d: Daemon): Promise<void> {
       await new Promise((r) => setTimeout(r, 1000));
       continue;
     }
+
     for (const u of updates) {
       try {
         await handleUpdate(d, u);
@@ -578,7 +699,6 @@ function buildDaemon(): Daemon | null {
   const log = createWriteStream(logPath, { flags: "a" });
   const apiBase =
     process.env.TG_BRIDGE_API_BASE ?? config.apiBase ?? "https://api.telegram.org";
-  const ompBin = process.env.TG_BRIDGE_OMP_BIN ?? "/usr/local/bin/omp";
   const socketPath = process.env.TG_BRIDGE_SOCK ?? join(stateDir, "sock");
 
   const client = new TelegramClient({ token: config.botToken, apiBase }, {
@@ -589,19 +709,8 @@ function buildDaemon(): Daemon | null {
   });
   client.setLogStream(log);
 
-  const tasks = new TaskManager(ompBin, {
-    onLine: (cwd, line) => log.write(`[task:${basename(cwd)}] ${line}\n`),
-    onExit: (cwd, code) => log.write(`[task:${basename(cwd)}] exited ${code}\n`),
-    onLog: (m) => log.write(`[task] ${m}\n`),
-  });
-  tasks.setLogStream(log);
-
   const socket = new SocketManager();
-  const render = new RenderEngine(
-    client,
-    { onLine: () => {}, onFinalize: () => {} },
-    config.editIntervalMs,
-  );
+  const render = new RenderEngine(client, config.editIntervalMs);
   render.setLogStream(log);
 
   const d: Daemon = {
@@ -610,7 +719,6 @@ function buildDaemon(): Daemon | null {
     apiBase,
     log,
     client,
-    tasks,
     socket,
     render,
     bindings: readBindings(),
@@ -619,7 +727,6 @@ function buildDaemon(): Daemon | null {
     qCounter: 0,
     offset: readOffset(),
     socketPath,
-    ompBin,
   };
 
   return d;
@@ -631,11 +738,26 @@ async function main(): Promise<void> {
     console.error("tg-bridge: config.json not ready (missing botToken/groupId). Supervisor will retry.");
     process.exit(0);
   }
-  logMsg(d, `starting daemon (api=${d.apiBase}, sock=${d.socketPath}, omp=${d.ompBin})`);
+  logMsg(d, `starting daemon (api=${d.apiBase}, sock=${d.socketPath})`);
 
   // Socket server for the in-session extension (start() installs the callbacks).
   d.socket.setLogStream(d.log);
   d.socket.start(d.socketPath, buildSocketCallbacks(d));
+
+  // SIGHUP handler for config reload.
+  process.on("SIGHUP", () => {
+    logMsg(d, "SIGHUP received, reloading config");
+    const cfg = readConfig();
+    if (cfg) {
+      d.config = cfg;
+      logMsg(d, "config reloaded");
+    }
+  });
+
+  // unhandledRejection watchdog.
+  process.on("unhandledRejection", (reason) => {
+    logMsg(d, `unhandledRejection: ${(reason as Error).message}`);
+  });
 
   // Graceful shutdown.
   process.on("SIGTERM", () => {

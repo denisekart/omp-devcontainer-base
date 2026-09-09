@@ -7,7 +7,6 @@ export interface Config {
   botToken: string;
   groupId: number;
   allowedUserIds: number[];
-  maxConcurrent: number;
   editIntervalMs: number;
   apiBase?: string;
 }
@@ -18,8 +17,8 @@ export interface Binding {
   lastSessionId?: string;
   lastSessionFile?: string;
   lastEventAt: number;
-  remoteEnabled: boolean;
   verbosity: "low" | "mid" | "high" | "xhigh";
+  remoteOn: boolean;
 }
 
 export type Verbosity = "low" | "mid" | "high" | "xhigh";
@@ -49,7 +48,6 @@ export function getReplayEntries(
   return replay.get(topicId) ?? [];
 }
 const DEFAULT_EDIT_INTERVAL_MS = 1500;
-const DEFAULT_MAX_CONCURRENT = 3;
 
 export function readStateDir(): string {
   return process.env.TG_BRIDGE_STATE_DIR ?? "/home/vscode/.omp/tg-bridge";
@@ -75,7 +73,6 @@ export function readConfig(): Config | null {
     botToken: parsed.botToken!,
     groupId: parsed.groupId!,
     allowedUserIds: parsed.allowedUserIds ?? [],
-    maxConcurrent: parsed.maxConcurrent ?? DEFAULT_MAX_CONCURRENT,
     editIntervalMs: parsed.editIntervalMs ?? DEFAULT_EDIT_INTERVAL_MS,
     apiBase: parsed.apiBase,
   };
@@ -154,9 +151,14 @@ export function setBindingForTopic(
   cwd: string,
 ): void {
   const name = cwd.split("/").pop() ?? "unknown";
-  bindings.set(topicId, { cwd, name, lastEventAt: Date.now(), remoteEnabled: true, verbosity: "mid" });
+  bindings.set(topicId, {
+    cwd,
+    name,
+    lastEventAt: Date.now(),
+    verbosity: "mid",
+    remoteOn: false,
+  });
 }
-
 export function removeBindingForTopic(
   bindings: Map<number, Binding>,
   topicId: number,

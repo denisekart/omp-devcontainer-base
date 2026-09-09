@@ -3,14 +3,10 @@
 import { createWriteStream } from "node:fs";
 import type { TelegramClient } from "./telegram";
 
-export interface RenderCallbacks {
-  onLine: (topicId: number, line: string) => void;
-  onFinalize: (topicId: number, summary: string) => void;
-}
-
 export interface LiveMessage {
   chatId: number | string;
   messageId: number;
+  topicId: number;
   lines: string[];
   turnId: string;
   finalized: boolean;
@@ -18,15 +14,13 @@ export interface LiveMessage {
 
 export class RenderEngine {
   private liveMessages = new Map<string, LiveMessage>();
-  private callbacks: RenderCallbacks;
   private client: TelegramClient;
   private editIntervalMs: number;
   private logStream: ReturnType<typeof createWriteStream> | null = null;
   private lastEditTime = 0;
 
-  constructor(client: TelegramClient, callbacks: RenderCallbacks, editIntervalMs: number) {
+  constructor(client: TelegramClient, editIntervalMs: number) {
     this.client = client;
-    this.callbacks = callbacks;
     this.editIntervalMs = editIntervalMs;
   }
 
@@ -36,29 +30,8 @@ export class RenderEngine {
 
   private log(msg: string) {
     if (this.logStream) {
-      this.logStream.write(msg + "\n");
+      this.logStream.write(`${msg}\n`);
     }
-  }
-
-  startTurn(
-    chatId: number | string,
-    topicId: number,
-    turnId: string,
-  ): number | null {
-    const key = `${chatId}:${topicId}:${turnId}`;
-    if (this.liveMessages.has(key)) {
-      this.log(`Turn already active: ${key}`);
-      return null;
-    }
-    const msg = {
-      chatId,
-      messageId: 0,
-      lines: [],
-      turnId,
-      finalized: false,
-    };
-    this.liveMessages.set(key, msg);
-    return null;
   }
 
   async publishTurn(
@@ -68,9 +41,10 @@ export class RenderEngine {
     initialLine: string,
   ): Promise<number> {
     const key = `${chatId}:${topicId}:${turnId}`;
-    const msg = {
+    const msg: LiveMessage = {
       chatId,
       messageId: 0,
+      topicId,
       lines: [initialLine],
       turnId,
       finalized: false,
@@ -80,9 +54,9 @@ export class RenderEngine {
     const fullText = initialLine;
     const chunks = this.client.chunkText(fullText);
     for (const chunk of chunks) {
-      const res = await this.client.sendMessage(chatId, chunk);
+      const res = await this.client.sendMessage(chatId, chunk, { message_thread_id: topicId });
       if (res && typeof res === "object" && "message_id" in res) {
-        msg.messageId = (res as { message_id: number }).message_id;
+        msg.messageId = res.message_id;
       }
     }
     return msg.messageId;
@@ -111,23 +85,6 @@ export class RenderEngine {
     }
   }
 
-  async finalizeTurn(
-    chatId: number | string,
-    topicId: number,
-    turnId: string,
-    summary: string,
-  ): Promise<void> {
-    const key = `${chatId}:${topicId}:${turnId}`;
-    const msg = this.liveMessages.get(key);
-    if (!msg) return;
-
-    msg.finalized = true;
-    msg.lines.push(summary);
-    this.lastEditTime = 0; // Force flush
-    await this.flushMessage(msg);
-    this.callbacks.onFinalize(topicId, summary);
-    this.liveMessages.delete(key);
-  }
 
   private async flushMessage(msg: LiveMessage): Promise<void> {
     const text = msg.lines.join("\n");
@@ -137,9 +94,11 @@ export class RenderEngine {
     for (const chunk of chunks) {
       try {
         if (msg.messageId > 0 && chunks.length === 1) {
-          await this.client.editMessageText(msg.chatId, msg.messageId, chunk);
+          await this.client.editMessageText(msg.chatId, msg.messageId, chunk, {
+            message_thread_id: msg.topicId,
+          });
         } else {
-          await this.client.sendMessage(msg.chatId, chunk);
+          await this.client.sendMessage(msg.chatId, chunk, { message_thread_id: msg.topicId });
         }
       } catch (err) {
         this.log(`Edit error: ${err}`);
@@ -147,15 +106,4 @@ export class RenderEngine {
     }
   }
 
-  clearChat(chatId: number | string): void {
-    for (const [key, msg] of this.liveMessages) {
-      if (msg.chatId === chatId) {
-        this.liveMessages.delete(key);
-      }
-    }
-  }
-
-  getActiveTurns(): string[] {
-    return Array.from(this.liveMessages.keys());
-  }
 }

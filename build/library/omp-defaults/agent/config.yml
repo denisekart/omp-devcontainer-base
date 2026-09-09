@@ -168,10 +168,10 @@ features:
   unexpectedStopDetection: smart
 compaction:
   methodOrder:
-    - snapcompact
     - handoff
     - soft
     - shake
+    - snapcompact
     - remote
   handoffSaveToDisk: true
 autolearn:

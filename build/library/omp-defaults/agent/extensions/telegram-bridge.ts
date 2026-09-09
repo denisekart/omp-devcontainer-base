@@ -8,9 +8,12 @@
  * Socket: unix socket at $TG_BRIDGE_SOCK or ~/.omp/tg-bridge/sock.
  * One JSON object per line (JSONL).
  */
+import child_process from "node:child_process";
+import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -30,7 +33,8 @@ import type {
   CustomToolCallEvent,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 
-// Timer is not exported from the types module; it's just a timer handle.
+// Timer: opaque handle returned by ctx.setTimeout (the API's Timer type is not
+// exported). Stored as number; ctx.clearTimer accepts the handle at runtime.
 type Timer = number;
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -49,29 +53,18 @@ interface PendingAnswer {
   timer: Timer;
 }
 
-interface PendingQuestion {
-  id: string;
-  resolve: (value: unknown) => void;
-  reject: (reason: Error) => void;
-}
-
 interface ProgressBatch {
   lines: string[];
   timer: Timer | null;
 }
 
-interface AskState {
-  pending: PendingQuestion[];
-  answered: Map<string, unknown>;
-  timer: Timer | null;
-}
-
 // ── Constants ──────────────────────────────────────────────────────────────
 
-const DEFAULT_CONFIG: BridgeConfig = { enabled: true, verbosity: "mid" };
+const DEFAULT_CONFIG: BridgeConfig = { enabled: false, verbosity: "mid" };
 const SOCKET_PATH_ENV = "TG_BRIDGE_SOCK";
 const DEFAULT_SOCK_DIR = path.join(os.homedir(), ".omp", "tg-bridge");
 const DEFAULT_SOCK_PATH = path.join(DEFAULT_SOCK_DIR, "sock");
+const CONFIG_FILE_NAME = "config.json";
 const RECONNECT_MIN_MS = 5_000;
 const RECONNECT_MAX_MS = 60_000;
 const RECONNECT_FACTOR = 1.5;
@@ -81,17 +74,17 @@ const ASK_TIMEOUT_MS_ENV = "TG_BRIDGE_ASK_TIMEOUT_MS";
 
 // ── State ──────────────────────────────────────────────────────────────────
 
-let config: BridgeConfig = { ...DEFAULT_CONFIG };
+const config: BridgeConfig = { ...DEFAULT_CONFIG };
 let socket: net.Socket | null = null;
 let connected = false;
 let reconnectBackoffMs = RECONNECT_MIN_MS;
 let lastEventAt = Date.now();
-let askTimeoutMs = parseInt(
+const askTimeoutMs = parseInt(
   process.env[ASK_TIMEOUT_MS_ENV] ?? "",
   10
 ) || ASK_TIMEOUT_MS;
-let progressBatch: ProgressBatch = { lines: [], timer: null };
-let pendingAnswers = new Map<string, PendingAnswer>();
+const progressBatch: ProgressBatch = { lines: [], timer: null };
+const pendingAnswers = new Map<string, PendingAnswer>();
 let ctxRef: ExtensionContext | null = null;
 let piRef: ExtensionAPI | null = null;
 let sessionId = "";
@@ -101,11 +94,17 @@ let pid = process.pid;
 let ompVersion = "unknown";
 let recvBuffer = "";
 let shuttingDown = false;
+let supervisorProcess: child_process.ChildProcess | null = null;
+let daemonSocketPath = "";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function getSocketPath(): string {
   return process.env[SOCKET_PATH_ENV] ?? DEFAULT_SOCK_PATH;
+}
+
+function getConfigPath(): string {
+  return path.join(DEFAULT_SOCK_DIR, CONFIG_FILE_NAME);
 }
 
 function log(msg: string): void {
@@ -295,11 +294,12 @@ function connectSocket(): void {
   if (connected) return;
 
   const sockPath = getSocketPath();
+  daemonSocketPath = sockPath;
   try {
     socket = new net.Socket();
     socket.connect(sockPath, () => {
       connected = true;
-      reconnectBackoffMs = RECONNECT_MIN_LAST;
+      reconnectBackoffMs = RECONNECT_MIN_MS;
       log("connected");
       sendHello();
     });
@@ -362,7 +362,6 @@ function closeSocket(): void {
   }
 }
 
-const RECONNECT_MIN_LAST = RECONNECT_MIN_MS;
 
 function scheduleReconnect(): void {
   if (!ctxRef) return;
@@ -392,6 +391,7 @@ function sendHello(): void {
   // Request config
   safeSend({ type: "config_request" as const, cwd: cwd });
 }
+
 // ── Frame handling ─────────────────────────────────────────────────────────
 
 function handleFrame(frame: Record<string, unknown>): void {
@@ -403,6 +403,15 @@ function handleFrame(frame: Record<string, unknown>): void {
       const verbosity = frame.verbosity as VerbosityLevel | undefined;
       if (enabled !== undefined) config.enabled = enabled;
       if (verbosity !== undefined) config.verbosity = verbosity;
+      break;
+    }
+    case "pair_done": {
+      // Auto-paired by daemon; notify user
+      try {
+        ctxRef?.ui?.notify?.("Auto-paired to Telegram via daemon. You're all set.", "info");
+      } catch {
+        /* best-effort */
+      }
       break;
     }
     case "prompt": {
@@ -440,6 +449,363 @@ function handleFrame(frame: Record<string, unknown>): void {
   }
 }
 
+// ── Supervisor ensure ──────────────────────────────────────────────────────
+
+function ensureDaemon(): void {
+  const sockPath = getSocketPath();
+
+  // If socket already exists, daemon is running
+  if (fs.existsSync(sockPath)) return;
+
+  // Ensure directory exists
+  try {
+    fs.mkdirSync(path.dirname(sockPath), { recursive: true });
+  } catch {
+    /* directory may already exist */
+  }
+
+  const supervisorScript = "/usr/local/share/tg-bridge/supervisor.sh";
+
+  // Try tmux first
+  try {
+    piRef?.exec?.("tmux", ["has-session", "-t", "tgbridge"])
+      .then((result) => {
+        if (result.code === 0) return;
+        // tmux session doesn't exist; try to create it
+        return piRef?.exec?.("tmux", ["new-session", "-d", "-s", "tgbridge", "bash", supervisorScript])
+          .catch(() => null);
+      })
+      .then((result) => {
+        if (result?.code === 0) {
+          supervisorProcess = null; // managed by tmux
+          return;
+        }
+        // tmux absent or failed; fall back to child_process.spawn
+        spawnSupervisorDirect(supervisorScript);
+      });
+  } catch {
+    // tmux command failed; fall back to direct spawn
+    spawnSupervisorDirect(supervisorScript);
+  }
+}
+
+function spawnSupervisorDirect(scriptPath: string): void {
+  try {
+    const proc = child_process.spawn("bash", [scriptPath], {
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    supervisorProcess = proc;
+    proc.on("error", () => {
+      /* supervisor failed to start */
+    });
+    // Don't keep reference alive
+    proc.unref();
+  } catch {
+    /* spawn failed */
+  }
+}
+
+// ── Pair wizard ────────────────────────────────────────────────────────────
+
+async function runPairWizard(): Promise<void> {
+  const ui = ctxRef?.ui;
+  const notify = (text: string, type?: "info" | "warning" | "error"): void => {
+    try {
+      ui?.notify?.(text, type);
+    } catch {
+      /* best-effort (may be absent in -p mode) */
+    }
+  };
+
+  // Step 0: Explain pairing
+  notify?.(
+    "🔗 Telegram Pairing Wizard\n\n" +
+    "Step 1: Create a bot with @BotFather on Telegram and copy the bot token.\n" +
+    "Step 2: Enter the bot token when prompted.",
+    "info"
+  );
+
+  // Step 1: Get bot token
+  const token = await ui?.input?.("Bot token", "123456:ABC-...");
+  if (!token || !token.trim()) {
+    notify?.("No token provided. Pairing cancelled.", "warning");
+    return;
+  }
+
+  const botToken = token.trim();
+
+  // Step 2: Validate token with getMe (send to daemon for direct fetch)
+  notify?.("Validating bot token…", "info");
+  safeSend({ type: "pair_validate" as const, token: botToken });
+
+  // Wait for pair_done or timeout (30s)
+  const validatePromise = new Promise<boolean>((resolve) => {
+    // Intercept pair_done via a one-shot socket handler until it arrives or times out.
+    if (socket && socket.readyState === "open") {
+      const handler = (data: Buffer) => {
+        lastEventAt = Date.now();
+        const raw = data.toString("utf-8");
+        const lines = raw.split("\n");
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const frame = JSON.parse(trimmed);
+            if (frame.type === "pair_done") {
+              const success = frame.success as boolean | undefined;
+              if (success) {
+                resolve(true);
+                return;
+              }
+            }
+          } catch {
+            /* skip */
+          }
+        }
+      };
+      socket.on("data", handler);
+      setTimeout(() => {
+        socket?.removeListener("data", handler);
+        resolve(false);
+      }, 30_000);
+    } else {
+      resolve(false);
+    }
+  });
+
+  const validated = await validatePromise;
+  if (!validated) {
+    notify?.("Bot token validation failed or timed out. Pairing cancelled.", "error");
+    return;
+  }
+
+  // Step 3: Explain group setup
+  notify?.(
+    "Step 3: Add your bot to a Telegram group (supergroup/forum).\n\n" +
+    "The daemon will auto-detect the group, or you can provide the group ID manually.\n\n" +
+    "Reply with a group ID (e.g. -1001234567890) or press Enter to auto-detect.",
+    "info"
+  );
+
+  const groupIdInput = await ui?.input?.("Group ID (optional)", "-1001234567890");
+  const groupId = groupIdInput?.trim();
+
+  if (groupId) {
+    // Step 4: Validate group with daemon
+    notify?.("Validating group…", "info");
+    safeSend({ type: "pair_validate_group" as const, groupId });
+
+    const groupValidated = await new Promise<boolean>((resolve) => {
+      const savedHandler = (data: Buffer) => {
+        lastEventAt = Date.now();
+        const raw = data.toString("utf-8");
+        const lines = raw.split("\n");
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const frame = JSON.parse(trimmed);
+            if (frame.type === "pair_done") {
+              const success = frame.success as boolean | undefined;
+              if (success) resolve(true);
+            }
+          } catch {
+            /* skip */
+          }
+        }
+      };
+      socket?.on("data", savedHandler);
+      setTimeout(() => {
+        socket?.removeListener("data", savedHandler);
+        resolve(false);
+      }, 30_000);
+    });
+
+    if (!groupValidated) {
+      notify?.("Group validation failed or timed out. Pairing cancelled.", "error");
+      return;
+    }
+  }
+
+  // Step 5: Write config.json
+  const configPath = getConfigPath();
+  try {
+    let existing: Record<string, unknown> = {};
+    try {
+      existing = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    } catch {
+      /* no config yet */
+    }
+    const configData = JSON.stringify({ ...existing, enabled: true, verbosity: config.verbosity }, null, 2);
+    fs.writeFileSync(configPath, configData, { mode: 0o600 });
+  } catch {
+    notify?.("Failed to write config. Pairing incomplete.", "error");
+    return;
+  }
+
+  // Step 6: Send config_reload to daemon
+  safeSend({ type: "config_reload" as const });
+
+  notify?.("✅ Pairing complete! Your session is now connected to Telegram.", "info");
+}
+
+// ── /remote command ────────────────────────────────────────────────────────
+
+async function handleRemoteCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+  try {
+    const notify = (text: string, type?: "info" | "warning" | "error") => {
+      try {
+        ctx.ui?.notify?.(text, type);
+      } catch {
+        /* notify is best-effort (may be absent in -p mode) */
+      }
+    };
+
+    const trimmed = args.trim();
+
+    // ── /remote or /remote status ──
+    if (!trimmed || trimmed.toLowerCase() === "status") {
+      const statusLines: string[] = [
+        `Telegram bridge: enabled=${config.enabled}, verbosity=${config.verbosity}`,
+        `daemon connected: ${connected ? "yes" : "no"}`,
+        `workspace: ${cwd}`,
+      ];
+      if (!connected) {
+        const age = Math.round((Date.now() - lastEventAt) / 1000);
+        statusLines.push(`last event: ${age}s ago`);
+      }
+      notify(statusLines.join("\n"), "info");
+      return;
+    }
+
+    // ── /remote on ──
+    if (trimmed.toLowerCase() === "on") {
+      config.enabled = true;
+      ensureDaemon();
+      connectSocket();
+      safeSend({ type: "config_update" as const, cwd, enabled: true });
+      notify("Telegram bridge: enabled and connecting…", "info");
+      return;
+    }
+
+    // ── /remote off ──
+    if (trimmed.toLowerCase() === "off") {
+      config.enabled = false;
+      safeSend({ type: "config_update" as const, cwd, enabled: false });
+      closeSocket();
+      notify("Telegram bridge: disabled and disconnected.", "info");
+      return;
+    }
+
+    // ── /remote verbosity <level> ──
+    if (trimmed.toLowerCase().startsWith("verbosity") || trimmed.toLowerCase().startsWith("verb")) {
+      const levelMatch = trimmed.match(/verbosity\s+(\S+)/i);
+      if (!levelMatch) {
+        notify("Usage: /remote verbosity <low|mid|high|xhigh>", "warning");
+        return;
+      }
+      const level = levelMatch[1].toLowerCase();
+      const validLevels: VerbosityLevel[] = ["low", "mid", "high", "xhigh"];
+      // Accept "medium" as alias for "mid"
+      const mappedLevel = level === "medium" ? "mid" : level;
+      if (validLevels.includes(mappedLevel as VerbosityLevel)) {
+        config.verbosity = mappedLevel as VerbosityLevel;
+        safeSend({
+          type: "config_update" as const,
+          cwd,
+          verbosity: mappedLevel,
+        });
+        notify(`Telegram bridge: verbosity set to ${mappedLevel}`, "info");
+      } else {
+        notify(
+          `Telegram bridge: invalid verbosity "${level}". Use low|mid|high|xhigh`,
+          "warning"
+        );
+      }
+      return;
+    }
+
+    // ── /remote pair ──
+    if (trimmed.toLowerCase() === "pair") {
+      await runPairWizard();
+      return;
+    }
+
+    // ── /remote pair <token> <groupId> ──
+    const pairMatch = trimmed.match(/^pair\s+(\S+)\s+(\S+)/i);
+    if (pairMatch) {
+      const token = pairMatch[1];
+      const groupId = pairMatch[2];
+      config.enabled = true;
+      ensureDaemon();
+      connectSocket();
+
+      // Write config
+      const configPath = getConfigPath();
+      try {
+        let existing: Record<string, unknown> = {};
+        try {
+          existing = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+        } catch {
+          /* no config yet */
+        }
+        const configData = JSON.stringify({ ...existing, enabled: true, verbosity: config.verbosity }, null, 2);
+        fs.writeFileSync(configPath, configData, { mode: 0o600 });
+      } catch {
+        notify("Failed to write config.", "error");
+        return;
+      }
+
+      // Send pair command to daemon
+      safeSend({ type: "pair" as const, token, groupId });
+      safeSend({ type: "config_reload" as const });
+
+      notify(`Pairing with token ${token.slice(0, 6)}… and group ${groupId}`, "info");
+      return;
+    }
+
+    // ── /remote help ──
+    if (trimmed.toLowerCase() === "help") {
+      const helpText = [
+        "Telegram bridge control:",
+        "",
+        "  /remote                    — show status (daemon connected, enabled, verbosity, workspace)",
+        "  /remote status             — same as above",
+        "  /remote on                 — connect this session to Telegram (starts polling if daemon not running)",
+        "  /remote off                — disconnect this session from Telegram (stops polling if no sessions remain)",
+        "  /remote verbosity <level>  — set verbosity (low|mid|high|xhigh)",
+        "  /remote pair               — interactive setup wizard",
+        "  /remote pair <token> <groupId> — direct pairing (non-interactive)",
+        "  /remote help               — show this message",
+      ].join("\n");
+      notify(helpText, "info");
+      return;
+    }
+
+    // ── Unknown command ──
+    notify(
+      `Unknown subcommand "${trimmed}". Use /remote help for usage.`,
+      "warning"
+    );
+  } catch {
+    // Never crash the session
+  }
+}
+
+function registerRemoteCommand(pi: ExtensionAPI): void {
+  try {
+    pi.registerCommand("remote", {
+      description: "Telegram bridge control: status, on/off, verbosity, pair",
+      handler: async (args: string, ctx: ExtensionCommandContext) => {
+        await handleRemoteCommand(args, ctx);
+      },
+    });
+  } catch {
+    // registerCommand may not exist in -p mode; no-op
+  }
+}
+
 // ── Event handlers ─────────────────────────────────────────────────────────
 
 function handleSessionStart(_ev: SessionStartEvent, ctx: ExtensionContext): void {
@@ -453,7 +819,12 @@ function handleSessionStart(_ev: SessionStartEvent, ctx: ExtensionContext): void
   } catch {
     /* version is best-effort */
   }
-  connectSocket();
+
+  // Connect socket only when enabled
+  if (config.enabled) {
+    ensureDaemon();
+    connectSocket();
+  }
 }
 
 function handleTurnStart(ev: TurnStartEvent, ctx: ExtensionContext): void {
@@ -500,6 +871,7 @@ function handleAgentEnd(ev: AgentEndEvent, ctx: ExtensionContext): void {
 function handleSessionShutdown(_ev: SessionShutdownEvent): void {
   flushProgressBatch();
   closeSocket();
+  shuttingDown = false; // reset for next session
 }
 
 async function handleToolCall(
@@ -573,7 +945,7 @@ async function handleAskInterception(
         pendingAnswers.delete(qId);
         reject(
           new Error(
-            "No reply from mobile within 10 minutes. The user is unavailable; proceed with your best judgement and note the assumption."
+            `No reply from mobile within ${Math.round(askTimeoutMs / 60000)} minutes. The user is unavailable; proceed with your best judgement and note the assumption.`
           )
         );
       }
@@ -609,83 +981,6 @@ async function handleAskInterception(
     }
     const msg = err instanceof Error ? err.message : "No reply from mobile";
     return { block: true, reason: msg };
-  }
-}
-
-// ── /remote command ────────────────────────────────────────────────────────
-
-function registerRemoteCommand(pi: ExtensionAPI): void {
-  try {
-    pi.registerCommand("remote", {
-      description: "Telegram bridge control: status, on/off, verbosity",
-      handler: async (args: string, ctx: ExtensionCommandContext) => {
-        try {
-          const notify = (text: string, type?: "info" | "warning" | "error") => {
-            try {
-              ctx.ui?.notify?.(text, type);
-            } catch {
-              /* notify is best-effort (may be absent in -p mode) */
-            }
-          };
-          const trimmed = args.trim();
-
-          if (!trimmed) {
-            // Status
-            const statusLines: string[] = [
-              `Telegram bridge: enabled=${config.enabled}, verbosity=${config.verbosity}`,
-              `daemon connected: ${connected ? "yes" : "no"}`,
-            ];
-            if (!connected) {
-              const age = Math.round((Date.now() - lastEventAt) / 1000);
-              statusLines.push(`last event: ${age}s ago`);
-            }
-            notify(statusLines.join("\n"), "info");
-            return;
-          }
-
-          const parts = trimmed.split(/\s+/);
-          const cmd = parts[0]?.toLowerCase();
-
-          if (cmd === "on") {
-            config.enabled = true;
-            safeSend({ type: "config_update" as const, cwd, enabled: true });
-            notify("Telegram bridge: enabled", "info");
-          } else if (cmd === "off") {
-            config.enabled = false;
-            safeSend({ type: "config_update" as const, cwd, enabled: false });
-            notify("Telegram bridge: disabled", "info");
-          } else if (cmd === "verbosity" || cmd === "verb") {
-            const level = parts[1]?.toLowerCase();
-            const validLevels: VerbosityLevel[] = ["low", "mid", "high", "xhigh"];
-            // Accept "medium" as alias for "mid"
-            const mappedLevel = level === "medium" ? "mid" : level;
-            if (validLevels.includes(mappedLevel as VerbosityLevel)) {
-              config.verbosity = mappedLevel as VerbosityLevel;
-              safeSend({
-                type: "config_update" as const,
-                cwd,
-                verbosity: mappedLevel,
-              });
-              notify(`Telegram bridge: verbosity set to ${mappedLevel}`, "info");
-            } else {
-              notify(
-                `Telegram bridge: invalid verbosity "${level}". Use low|mid|high|xhigh`,
-                "warning"
-              );
-            }
-          } else {
-            notify(
-              `Telegram bridge: unknown command "${cmd}". Use: on|off|verbosity <level>`,
-              "warning"
-            );
-          }
-        } catch {
-          // Never crash the session
-        }
-      },
-    });
-  } catch {
-    // registerCommand may not exist in -p mode; no-op
   }
 }
 

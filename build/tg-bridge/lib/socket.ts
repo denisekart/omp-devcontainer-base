@@ -13,7 +13,7 @@ export interface SessionState {
   pid: number;
   turnLive: boolean;
   lastEventAt: number;
-  enabled: boolean;
+  remoteOn: boolean;
   verbosity: Verbosity;
   stream?: NetSocket;
 }
@@ -29,8 +29,10 @@ export interface QuestionFrame {
 export interface SocketCallbacks {
   onHello: (cwd: string, state: SessionState) => void;
   onProgress: (cwd: string, kind: string, data: unknown) => void;
-  onQuestion: (cwd: string, question: QuestionFrame) => void;
+  onQuestion: (cwd: string, q: QuestionFrame) => void;
   onConfigUpdate: (cwd: string, enabled?: boolean, verbosity?: Verbosity) => void;
+  /** Control frames that carry no cwd (config_set, config_reload, pair, pair_validate, pair_validate_group). */
+  onControl?: (type: string, frame: Record<string, unknown>) => void;
   onLog?: (msg: string) => void;
 }
 
@@ -55,6 +57,8 @@ export class SocketManager implements SocketServer {
       onProgress: () => {},
       onQuestion: () => {},
       onConfigUpdate: () => {},
+      onControl: () => {},
+      onLog: () => {},
     };
   }
 
@@ -73,6 +77,14 @@ export class SocketManager implements SocketServer {
 
   getSession(cwd: string): SessionState | undefined {
     return this.sessions.get(cwd);
+  }
+
+  get allSessions(): Map<string, SessionState> {
+    return this.sessions;
+  }
+
+  getSessionCount(): number {
+    return this.sessions.size;
   }
 
   setSession(cwd: string, state: SessionState): void {
@@ -142,9 +154,8 @@ export class SocketManager implements SocketServer {
     } catch {
       return;
     }
-    // Progress/question frames omit cwd (per protocol) — infer it from the
-    // session this socket established via hello.
-    let cwd = frame.cwd as string | undefined;
+    if (frameStr.trim() === "") return;
+    let cwd = typeof frame.cwd === "string" ? (frame.cwd as string) : undefined;
     if (!cwd) {
       for (const [c, s] of this.sessions) {
         if (s.stream === socket) {
@@ -153,7 +164,20 @@ export class SocketManager implements SocketServer {
         }
       }
     }
-    if (!cwd) return;
+    if (!cwd) {
+      const CONTROL_TYPES: Record<string, true> = {
+        config_set: true,
+        config_reload: true,
+        pair: true,
+        pair_validate: true,
+        pair_validate_group: true,
+      };
+      const type = frame.type as string;
+      if (CONTROL_TYPES[type]) {
+        this.callbacks.onControl?.(type, frame);
+      }
+      return;
+    }
 
     const type = frame.type as string;
     switch (type) {
@@ -165,12 +189,12 @@ export class SocketManager implements SocketServer {
           cwd,
           sessionId: sessionId ?? "",
           sessionFile: frame.sessionFile as string | undefined,
-          ompVersion: ompVersion ?? "",
-          pid: pid ?? 0,
+          ompVersion,
+          pid,
           turnLive: false,
-          lastEventAt: Date.now(),
-          enabled: true,
+          remoteOn: false,
           verbosity: "mid",
+          lastEventAt: Date.now(),
           stream: socket,
         };
         this.sessions.set(cwd, state);
@@ -214,7 +238,7 @@ export class SocketManager implements SocketServer {
         if (session) {
           this.sendFrame(cwd, {
             type: "config",
-            enabled: session.enabled,
+            enabled: session.remoteOn,
             verbosity: session.verbosity,
           });
         }
@@ -222,17 +246,43 @@ export class SocketManager implements SocketServer {
       }
       case "config_update": {
         const enabled = frame.enabled as boolean | undefined;
+        const remoteOn = frame.remoteOn as boolean | undefined;
+        const actualEnabled = enabled ?? remoteOn;
         const verbosity = frame.verbosity as Verbosity | undefined;
-        if (enabled !== undefined || verbosity !== undefined) {
+        if (actualEnabled !== undefined || verbosity !== undefined) {
           const session = this.sessions.get(cwd);
           if (session) {
-            if (enabled !== undefined) session.enabled = enabled;
+            if (actualEnabled !== undefined) session.remoteOn = actualEnabled;
             if (verbosity !== undefined) session.verbosity = verbosity;
           }
-          this.callbacks.onConfigUpdate(cwd, enabled, verbosity);
+          this.callbacks.onConfigUpdate(cwd, actualEnabled, verbosity);
         }
         break;
       }
+      case "status_request": {
+        let activeSessions = 0;
+        for (const session of this.sessions.values()) {
+          if (session.remoteOn) activeSessions++;
+        }
+        this.sendFrame(cwd, { type: "daemon_status", sessions: this.sessions.size, activeSessions });
+        break;
+      }
+      case "config_set":
+        {
+          const enabled = frame.enabled as boolean | undefined;
+          const remoteOn = frame.remoteOn as boolean | undefined;
+          const verbosity = frame.verbosity as Verbosity | undefined;
+          const actualEnabled = enabled ?? remoteOn;
+          if (actualEnabled !== undefined || verbosity !== undefined) {
+            const session = this.sessions.get(cwd);
+            if (session) {
+              if (actualEnabled !== undefined) session.remoteOn = actualEnabled;
+              if (verbosity !== undefined) session.verbosity = verbosity;
+            }
+            this.callbacks.onConfigUpdate(cwd, actualEnabled, verbosity);
+          }
+        }
+        break;
       default:
         this.log(`Unknown frame type: ${type}`);
     }

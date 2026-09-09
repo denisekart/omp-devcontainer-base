@@ -10,7 +10,7 @@
 # Target: ~/.omp/agent (persistent volume — user state, sacred)
 #
 # Contract:
-#   - rsync -a --delete for agents/ and skills/ subtrees (safe: no live state).
+#   - rsync -a --delete for agents/, skills/, and extensions/ subtrees (safe: no live state).
 #   - Plain copy (no --delete) for top-level config.yml, models.yml, mcp.json.
 #   - Never touches ./cache, .seeded-v1, *.db*, sessions/, terminal-sessions/,
 #     blobs/, last-changelog-version.
@@ -45,7 +45,7 @@ if [[ ! -d "${TARGET}" ]]; then
   exit 1
 fi
 
-MODE="${1:---check}"
+MODE="${1:---apply}"
 DRY_RUN=0
 if [[ "${MODE}" == "--dry-run" ]]; then
   DRY_RUN=1
@@ -75,6 +75,25 @@ else
     "${SRC}/agents/" "${TARGET}/agents/"
   rsync ${RSYNC_FLAGS} --delete \
     "${SRC}/skills/" "${TARGET}/skills/"
+fi
+
+# Sync extensions/ (repo-authored extension set; no live state inside) with --delete.
+# Skipped when the source has no extensions/ directory.
+if [[ -d "${SRC}/extensions" ]]; then
+  echo "sync-omp-defaults.sh: syncing extensions/ subtree..."
+  if [[ "${MODE}" == "--check" ]]; then
+    rsync ${RSYNC_FLAGS} --delete --itemize-changes \
+      "${SRC}/extensions/" "${TARGET}/extensions/" 2>&1 || true
+  else
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      echo "sync-omp-defaults.sh: [dry-run] rsync extensions/"
+    else
+      mkdir -p "${TARGET}/extensions"
+      rsync ${RSYNC_FLAGS} --delete \
+        "${SRC}/extensions/" "${TARGET}/extensions/"
+      echo "sync-omp-defaults.sh: synced extensions/"
+    fi
+  fi
 fi
 
 # Sync top-level files (plain copy, no --delete)

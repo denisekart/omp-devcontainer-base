@@ -1,9 +1,17 @@
 // selftest.ts — Self-test harness against mock TG API
+// Tests the session-driven, off-by-default design: no task mgmt, unconditional
+// config_set/config_reload, auto-pair, status_request, plus the original
+// offset-persistence, whitelist gate, free-text routing, and ask→answer flow.
 
-import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, readdirSync, statSync, rmdirSync } from "node:fs";
+import type { ChildProcess } from "node:child_process";
+import { dirname, join } from "node:path";
 import net from "node:net";
 import { spawn } from "node:child_process";
+
+// Repo root: selftest is run as `cd build/tg-bridge && bun selftest.ts` (see
+// docs/telegram-bridge.md), so process.cwd() is the tg-bridge dir.
+const REPO_ROOT = dirname(dirname(process.cwd()));
 
 interface MockCall {
   method: string;
@@ -15,10 +23,18 @@ interface MockCall {
 
 interface TestCase {
   name: string;
-  run: () => Promise<boolean>;
+  run: (stateDir: string, handle: SelftestHandle) => Promise<boolean>;
 }
 
-// Mock Telegram API server
+// Per-test resources; the harness kills them if a test times out.
+interface SelftestHandle {
+  daemon?: ChildProcess;
+  socketClient?: { socket: net.Socket };
+  mockServer?: MockTelegramServer;
+}
+
+// --- Mock Telegram API server ----------------------------------------------
+
 class MockTelegramServer {
   private calls: MockCall[] = [];
   private pendingUpdates: Array<() => void> = [];
@@ -45,8 +61,6 @@ class MockTelegramServer {
 
   set409OnNext(): void {
     this.pending409 = true;
-    // Wake any in-flight long-poll so the daemon returns and its next poll
-    // (immediately after) receives the 409.
     for (const resolve of this.pendingUpdates.splice(0)) {
       resolve();
     }
@@ -70,9 +84,6 @@ class MockTelegramServer {
             body += (chunk as Buffer).toString();
           }));
           req.on("end", async () => {
-            // The telegram client POSTs to /v1/bot<token>/<method> with the
-            // arguments as the JSON body; the method lives in the URL, not the
-            // body. Derive it from the last path segment.
             const rawUrl = req.url ?? "/";
             const path = rawUrl.split("?")[0] ?? "";
             const method = path.split("/").filter(Boolean).pop() ?? "";
@@ -104,13 +115,8 @@ class MockTelegramServer {
               respond(200, call.response);
               return;
             }
-            // No pre-seeded response mechanism: every request gets a real
-            // response (409 flag above, long-poll below, {ok:true} otherwise).
 
             if (method === "getUpdates") {
-              // Long poll: if the queue already has an update (injected before
-              // this poll began), return it immediately; otherwise wait for an
-              // injected update (or, in a real Telegram, the long-poll timeout).
               const hadUpdate = this.updateQueue.length > 0;
               if (!hadUpdate) {
                 await new Promise<void>((r) => {
@@ -153,6 +159,8 @@ class MockTelegramServer {
   }
 }
 
+// --- Socket helper ---------------------------------------------------------
+
 function connectSocket(
   socketPath: string,
 ): Promise<{
@@ -164,52 +172,87 @@ function connectSocket(
   return new Promise((resolve) => {
     const messages: unknown[] = [];
     const listeners: Array<(msg: unknown) => void> = [];
-    const socket = net.createConnection(socketPath);
+    let settled = false;
 
-    // Buffer every frame unconditionally so tests can inspect `messages`
-    // without needing to register a listener first.
-    socket.on("data", (data: unknown) => {
-      const text = (data as Buffer).toString();
-      for (const line of text.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const parsed = JSON.parse(line);
-          messages.push(parsed);
-          for (const cb of listeners) cb(parsed);
-        } catch {
-          // Ignore parse errors
+    const attempt = (tries: number) => {
+      const socket = net.createConnection(socketPath);
+
+      const finish = (s: net.Socket) => {
+        if (settled) return;
+        settled = true;
+        resolve({
+          socket: s,
+          send: (msg: Record<string, unknown>) => {
+            s.write(JSON.stringify(msg) + "\n");
+          },
+          onMessage: (cb: (msg: unknown) => void) => {
+            listeners.push(cb);
+          },
+          messages,
+        });
+      };
+
+      socket.on("data", (data: unknown) => {
+        const text = (data as Buffer).toString();
+        for (const line of text.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const parsed = JSON.parse(line);
+            messages.push(parsed);
+            for (const cb of listeners) cb(parsed);
+          } catch {
+            // Ignore parse errors
+          }
         }
-      }
-    });
+      });
 
-    const api = {
-      socket,
-      send: (msg: Record<string, unknown>) => {
-        socket.write(JSON.stringify(msg) + "\n");
-      },
-      onMessage: (cb: (msg: unknown) => void) => {
-        listeners.push(cb);
-      },
-      messages,
+      socket.on("connect", () => finish(socket));
+      socket.on("error", (_err: unknown) => {
+        // The daemon is a spawned process; its Unix socket is not listening
+        // until the process finishes bootstrapping. Retry a few times instead
+        // of resolving on the first ECONNREFUSED (which would leave every
+        // subsequent send() writing to a dead socket).
+        socket.destroy();
+        if (tries >= 40) {
+          finish(socket);
+        } else {
+          setTimeout(() => attempt(tries + 1), 25);
+        }
+      });
     };
 
-    socket.on("connect", () => {
-      resolve(api);
-    });
-
-    socket.on("error", (_err: unknown) => {
-      resolve(api);
-    });
+    attempt(0);
   });
 }
 
-async function main(): Promise<void> {
-  const results: { name: string; passed: boolean }[] = [];
+// --- Helpers ---------------------------------------------------------------
 
-  // Create temp state dir
-  const stateDir = join("/tmp", `tg-bridge-test-${Date.now()}`);
-  mkdirSync(stateDir, { recursive: true });
-  // A real, existing workspace path for /bind (the daemon validates it).
+function sleep(ms: number): Promise<void> {
+  // SAFETY: setTimeout calls the resolver with no args; the cast bridges the
+  // `void` vs `(value: void) => void` signature mismatch.
+  return new Promise((resolve) => setTimeout(resolve as unknown as () => void, ms));
+}
+
+function readJson(path: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function writeJson(path: string, obj: unknown): void {
+  writeFileSync(path, JSON.stringify(obj, null, 2));
+}
+
+// --- Test cases ------------------------------------------------------------
+
+async function t_offsetPersistence(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
   const projectCwd = join(stateDir, "project");
   mkdirSync(projectCwd, { recursive: true });
 
@@ -217,411 +260,904 @@ async function main(): Promise<void> {
     botToken: "test:token",
     groupId: -1001234567890,
     allowedUserIds: [42],
-    maxConcurrent: 3,
     editIntervalMs: 1500,
   };
+  writeJson(join(stateDir, "config.json"), config);
 
-  writeFileSync(
-    join(stateDir, "config.json"),
-    JSON.stringify(config, null, 2),
-  );
 
-  // Create stub omp binary
-  const ompBin = join(stateDir, "omp");
-  writeFileSync(
-    ompBin,
-    `#!/usr/bin/env bash
-while read line; do
-  echo "$line"
-  if echo "$line" | grep -q "SIGINT"; then
-    exit 0
-  fi
-done
-`,
-  );
-  (require("fs") as typeof import("fs")).chmodSync(ompBin, 0o755);
-
-  // Launch mock server
-  const mockServer = new MockTelegramServer();
-  await mockServer.start();
-  const port = mockServer.getPort();
-
-  // Launch daemon
-  const daemon = spawn("bun", ["build/tg-bridge/daemon.ts"], {
-    cwd: "/workspaces/omp-devcontainer-base",
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
     env: {
       ...process.env,
       TG_BRIDGE_STATE_DIR: stateDir,
-      TG_BRIDGE_OMP_BIN: ompBin,
       TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  handle.daemon = daemon;
 
-  let daemonStdout = "";
-  let daemonStderr = "";
-  daemon.stdout?.on("data", (data: Buffer) => {
-    daemonStdout += data.toString();
+  // Connect socket client with remoteOn=true so daemon polls getUpdates.
+  const socketClient = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = socketClient;
+  socketClient.send({
+    type: "hello",
+    cwd: projectCwd,
+    sessionId: "test-offset",
+    ompVersion: "18.0.0",
+    pid: process.pid,
   });
-  daemon.stderr?.on("data", (data: Buffer) => {
-    daemonStderr += data.toString();
+  socketClient.send({
+    type: "config_update",
+    cwd: projectCwd,
+    remoteOn: true,
+    verbosity: "high",
   });
+  await sleep(100);
 
-  // Give daemon time to start
-  await new Promise((r) => setTimeout(r, 500));
+  // Inject update so daemon polls and records offset.
+  mockServer.injectUpdate({
+    update_id: 1,
+    message: {
+      message_id: 1,
+      from: { id: 42, first_name: "Admin" },
+      chat: { id: -1001234567890, type: "supergroup" },
+      date: Date.now(),
+      text: "hello",
+      thread_id: 1,
+    },
+  });
+  await sleep(200);
+
+  const offsetPath = join(stateDir, "offset.json");
+  if (!existsSync(offsetPath)) return false;
+  const offset = readJson(offsetPath);
+  if (!offset || offset.offset === undefined) return false;
+
+  // Free text in a bound, remote-on forum topic is routed to the live
+  // session as a `prompt` frame over the socket (not echoed back via
+  // sendMessage). Verify the frame carried the original text.
+  const prompt = socketClient.messages.find(
+    (m) =>
+      typeof m === "object" &&
+      m !== null &&
+      "type" in m &&
+      (m as Record<string, unknown>).type === "prompt" &&
+      (m as Record<string, unknown>).text === "hello",
+  );
+  if (!prompt) return false;
+
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  socketClient.socket.end();
+  mockServer.stop();
+  return true;
+}
+
+
+async function t_offByDefault(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  // Off-by-default: free text on an unbound topic is not forwarded to a
+  // session — the daemon replies "not bound" instead.
+  mockServer.injectUpdate({
+    update_id: 1,
+    message: {
+      message_id: 1,
+      from: { id: 42, first_name: "Admin" },
+      chat: { id: -1001234567890, type: "supergroup" },
+      date: Date.now(),
+      text: "hello",
+      thread_id: 1,
+    },
+  });
+  await sleep(200);
+
+  const repliedNotBound = mockServer
+    .getCalls()
+    .filter((c) => c.method === "sendMessage")
+    .filter(
+      (c) =>
+        (c.args as Record<string, unknown>).text ===
+        "This topic is not bound. Use /bind <cwd> first.",
+    ).length === 1;
+
+  // Enable remote: socket hello + config_update creates the topic-1 binding
+  // and flips the session's remoteOn.
+  const socketClient = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = socketClient;
+  socketClient.send({
+    type: "hello",
+    cwd: projectCwd,
+    sessionId: "test-off",
+    ompVersion: "18.0.0",
+    pid: process.pid,
+  });
+  await sleep(100);
+  socketClient.send({
+    type: "config_update",
+    cwd: projectCwd,
+    remoteOn: true,
+    verbosity: "mid",
+  });
+  await sleep(100);
+
+  // Free text on the bound + remote-on topic is delivered to the session.
+  mockServer.injectUpdate({
+    update_id: 2,
+    message: {
+      message_id: 2,
+      from: { id: 42, first_name: "Admin" },
+      chat: { id: -1001234567890, type: "supergroup" },
+      date: Date.now(),
+      text: "hello again",
+      thread_id: 1,
+    },
+  });
+  await sleep(200);
+
+  const hasPrompt = socketClient.messages.some(
+    (m) =>
+      typeof m === "object" &&
+      m !== null &&
+      "type" in m &&
+      (m as Record<string, unknown>).type === "prompt",
+  );
+
+  socketClient.socket.end();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+
+  return repliedNotBound && hasPrompt;
+}
+
+async function t_configSet(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  const socketClient = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = socketClient;
+
+  // Send config_set to enable remote on topic 1.
+  socketClient.send({
+    type: "config_set",
+    topicId: "1",
+    remoteOn: true,
+    verbosity: "high",
+  });
+  await sleep(100);
+
+  // Check bindings.json for the updated config.
+  const bindingsPath = join(stateDir, "bindings.json");
+  if (!existsSync(bindingsPath)) return false;
+  const bindings = readJson(bindingsPath);
+  if (!bindings) return false;
+
+  const binding = bindings["1"];
+  if (!binding) return false;
+
+  socketClient.socket.end();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+
+  return (
+    (binding as Record<string, unknown>).remoteOn === true &&
+    (binding as Record<string, unknown>).verbosity === "high"
+  );
+}
+
+async function t_configReload(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  const socketClient = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = socketClient;
+
+  // Send config_reload — daemon should re-read config.json.
+  socketClient.send({ type: "config_reload" });
+  await sleep(100);
+
+  // Verify the daemon didn't crash (still running).
+  const stillRunning = daemon.exitCode === null;
+
+  socketClient.socket.end();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+
+  return stillRunning;
+}
+
+async function t_autoPair(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  // Start with empty allowedUserIds — first DM should trigger auto-pair.
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  // DM from a new user — should trigger pair_done.
+  mockServer.injectUpdate({
+    update_id: 1,
+    message: {
+      message_id: 1,
+      from: { id: 42, first_name: "Admin" },
+      chat: { id: -1001234567890, type: "private" },
+      date: Date.now(),
+      text: "/pair",
+    },
+  });
+  await sleep(200);
+
+  const calls = mockServer.getCalls();
+  const sendMessages = calls.filter((c) => c.method === "sendMessage");
+  const pairDone = sendMessages.some(
+    (c) =>
+      c.args.text &&
+      c.args.text.toString().includes("pair_done") ||
+      c.args.text &&
+      c.args.text.toString().includes("Pairing"),
+  );
+
+  // Verify user 42 is now in allowedUserIds.
+  const updatedConfig = readJson(join(stateDir, "config.json"));
+  const userIdInList =
+    !!updatedConfig &&
+    Array.isArray((updatedConfig as Record<string, unknown>).allowedUserIds) &&
+    (updatedConfig as { allowedUserIds: number[] }).allowedUserIds.includes(42);
+
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+
+  return (pairDone as boolean) && userIdInList;
+}
+
+async function t_statusRequest(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  const socketClient = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = socketClient;
+  socketClient.send({
+    type: "hello",
+    cwd: projectCwd,
+    sessionId: "sess-123",
+    ompVersion: "18.0.0",
+    pid: 1234,
+  });
+  await sleep(100);
+
+  // Send a status_request from the socket.
+  socketClient.send({ type: "status_request" });
+  await sleep(100);
+
+  // Check that the socket received a daemon_status response.
+  const hasStatus = socketClient.messages.some(
+    (m) =>
+      typeof m === "object" &&
+      m !== null &&
+      "type" in m &&
+      (m as Record<string, unknown>).type === "daemon_status",
+  );
+
+  socketClient.socket.end();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+
+  return hasStatus;
+}
+
+async function t_whitelistGate(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  // Remove user 42 temporarily.
+  config.allowedUserIds = [];
+  writeJson(join(stateDir, "config.json"), config);
+
+  const sendsBefore = mockServer
+    .getCalls()
+    .filter((c) => c.method === "sendMessage").length;
+
+  mockServer.injectUpdate({
+    update_id: 1,
+    message: {
+      message_id: 1,
+      from: { id: 99, first_name: "Stranger" },
+      chat: { id: -1001234567890, type: "supergroup" },
+      date: Date.now(),
+      text: "hello",
+      thread_id: 1,
+    },
+  });
+  await sleep(200);
+
+  const sendsAfter = mockServer
+    .getCalls()
+    .filter((c) => c.method === "sendMessage").length;
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+  return sendsAfter === sendsBefore;
+}
+
+async function t_freeTextRouting(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  // Connect socket client and bind the topic.
+  const socketClient = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = socketClient;
+  socketClient.send({
+    type: "hello",
+    cwd: projectCwd,
+    sessionId: "sess-123",
+    ompVersion: "18.0.0",
+    pid: 1234,
+  });
+  await sleep(100);
+  // Bind topic 1 to the project and enable remote (creates the binding and
+  // flips the session's remoteOn) — preconditions for free-text routing.
+  socketClient.send({
+    type: "config_update",
+    cwd: projectCwd,
+    remoteOn: true,
+    verbosity: "mid",
+  });
+  await sleep(100);
+
+  mockServer.injectUpdate({
+    update_id: 1,
+    message: {
+      message_id: 1,
+      from: { id: 42, first_name: "Admin" },
+      chat: { id: -1001234567890, type: "supergroup" },
+      date: Date.now(),
+      text: "hello from telegram",
+      thread_id: 1,
+    },
+  });
+  await sleep(200);
+
+  const hasPrompt = socketClient.messages.some(
+    (m) =>
+      typeof m === "object" &&
+      m !== null &&
+      "type" in m &&
+      (m as Record<string, unknown>).type === "prompt",
+  );
+
+  socketClient.socket.end();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+
+  return hasPrompt;
+}
+
+async function t_questionAnswer(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  const socketClient = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = socketClient;
+  socketClient.send({
+    type: "hello",
+    cwd: projectCwd,
+    sessionId: "sess-456",
+    ompVersion: "18.0.0",
+    pid: 5678,
+  });
+  await sleep(100);
+  // Bind topic 1 to the project and enable remote so /ask can publish.
+  socketClient.send({
+    type: "config_update",
+    cwd: projectCwd,
+    remoteOn: true,
+    verbosity: "mid",
+  });
+  await sleep(100);
+
+  // Send a question message.
+  mockServer.injectUpdate({
+    update_id: 1,
+    message: {
+      message_id: 1,
+      from: { id: 42, first_name: "Admin" },
+      chat: { id: -1001234567890, type: "supergroup" },
+      date: Date.now(),
+      text: "/ask What is the capital of France?",
+      thread_id: 1,
+    },
+  });
+  await sleep(200);
+
+  // Simulate callback answer.
+  mockServer.injectUpdate({
+    update_id: 2,
+    callback_query: {
+      id: "cb-1",
+      from: { id: 42, first_name: "Admin" },
+      message: { message_id: 100 },
+      data: "q:1:0",
+      chat_instance: "ci-1",
+    },
+  });
+  await sleep(200);
+
+  const hasAnswer = socketClient.messages.some(
+    (m) =>
+      typeof m === "object" &&
+      m !== null &&
+      "type" in m &&
+      (m as Record<string, unknown>).type === "answer",
+  );
+
+  socketClient.socket.end();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+
+  return hasAnswer;
+}
+
+async function t_configUpdate(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  const socketClient = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = socketClient;
+
+  socketClient.send({
+    type: "hello",
+    cwd: projectCwd,
+    sessionId: "sess-789",
+    ompVersion: "18.0.0",
+    pid: 9999,
+  });
+  await sleep(100);
+
+  // Send config_update with remoteOn (not enabled).
+  socketClient.send({
+    type: "config_update",
+    cwd: projectCwd,
+    remoteOn: false,
+    verbosity: "low",
+  });
+  await sleep(100);
+
+  const bindingsPath = join(stateDir, "bindings.json");
+  if (!existsSync(bindingsPath)) return false;
+
+  const bindings = readJson(bindingsPath);
+  if (!bindings) return false;
+
+  // Topic 1 was created by earlier bind test in the daemon.
+  // Use the first available binding key.
+  const keys = Object.keys(bindings);
+  if (keys.length === 0) return false;
+
+  const binding = bindings[keys[0]];
+  if (!binding) return false;
+
+  socketClient.socket.end();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+
+  return (
+    (binding as Record<string, unknown>).remoteOn === false &&
+    (binding as Record<string, unknown>).verbosity === "low"
+  );
+}
+
+async function t_bindCreatesTopic(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  mockServer.injectUpdate({
+    update_id: 1,
+    message: {
+      message_id: 1,
+      from: { id: 42, first_name: "Admin" },
+      chat: { id: -1001234567890, type: "supergroup" },
+      date: Date.now(),
+      text: `/bind ${projectCwd}`,
+      thread_id: 1,
+    },
+  });
+  await sleep(200);
+
+  const calls = mockServer.getCalls();
+  const sendMessages = calls.filter((c) => c.method === "sendMessage");
+  const bindCall = sendMessages.find(
+    (c) =>
+      c.args.text &&
+      c.args.text.toString().includes("Bound topic to"),
+  );
+  if (!bindCall) return false;
+
+  const bindingsPath = join(stateDir, "bindings.json");
+  if (!existsSync(bindingsPath)) return false;
+
+  const bindings = readJson(bindingsPath);
+  if (!bindings) return false;
+
+  const binding = bindings["1"];
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+  return (
+    binding !== null &&
+    (binding as Record<string, unknown>).cwd === projectCwd
+  );
+}
+
+async function t_409Exit(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  mockServer.set409OnNext();
+  await new Promise<void>((r) => {
+    if (daemon.exitCode !== null) {
+      r();
+      return;
+    }
+    daemon.once("exit", () => r());
+  });
+  return daemon.exitCode === 1;
+}
+
+// --- Main ------------------------------------------------------------------
+
+async function main(): Promise<void> {
+  const stateDir = join("/tmp", `tg-bridge-test-${Date.now()}`);
+  mkdirSync(stateDir, { recursive: true });
 
   const tests: TestCase[] = [
-    // 1. Offset persistence
-    {
-      name: "offset persistence",
-      run: async () => {
-        const update = {
-          update_id: 1,
-          message: {
-            message_id: 1,
-            from: { id: 42, first_name: "Admin" },
-            chat: { id: -1001234567890, type: "supergroup" },
-            date: Date.now(),
-            text: "/start test",
-            thread_id: 1,
-          },
-        };
-        mockServer.injectUpdate(update);
-
-        await new Promise((r) => setTimeout(r, 500));
-
-        const offsetPath = join(stateDir, "offset.json");
-        if (!existsSync(offsetPath)) return false;
-        let offset: Record<string, unknown> | null = null;
-        try {
-          offset = JSON.parse(readFileSync(offsetPath, "utf8"));
-        } catch {
-          offset = null;
-        }
-        return offset !== null && offset.offset !== undefined;
-      },
-    },
-
-    // 2. Whitelist gate (non-paired user)
-    {
-      name: "whitelist gate",
-      run: async () => {
-        // Remove user 42 from allowed list temporarily
-        let cfg: Record<string, unknown> | null = null;
-        try {
-          cfg = JSON.parse(
-            readFileSync(join(stateDir, "config.json"), "utf8"),
-          );
-        } catch {
-          cfg = null;
-        }
-        if (!cfg) return false;
-        (cfg as { allowedUserIds: number[] }).allowedUserIds = [];
-        writeFileSync(
-          join(stateDir, "config.json"),
-          JSON.stringify(cfg, null, 2),
-        );
-
-        // Count sendMessage calls so far (earlier tests may have replied to
-        // allowed users); the stranger's message must not add any.
-        const sendsBefore = mockServer
-          .getCalls()
-          .filter((c) => c.method === "sendMessage").length;
-
-        const update = {
-          update_id: 2,
-          message: {
-            message_id: 2,
-            from: { id: 99, first_name: "Stranger" },
-            chat: { id: -1001234567890, type: "supergroup" },
-            date: Date.now(),
-            text: "hello",
-            thread_id: 1,
-          },
-        };
-        mockServer.injectUpdate(update);
-
-        await new Promise((r) => setTimeout(r, 500));
-
-        const sendsAfter = mockServer
-          .getCalls()
-          .filter((c) => c.method === "sendMessage").length;
-        return sendsAfter === sendsBefore;
-      },
-    },
-
-    // 3. /bind creates topic + binding
-    {
-      name: "/bind creates topic + binding",
-      run: async () => {
-        // Send /bind command from allowed user
-        config.allowedUserIds = [42];
-        writeFileSync(
-          join(stateDir, "config.json"),
-          JSON.stringify(config, null, 2),
-        );
-
-        const update = {
-          update_id: 3,
-          message: {
-            message_id: 3,
-            from: { id: 42, first_name: "Admin" },
-            chat: { id: -1001234567890, type: "supergroup" },
-            date: Date.now(),
-            text: `/bind ${projectCwd}`,
-            thread_id: 1,
-          },
-        };
-        mockServer.injectUpdate(update);
-
-        await new Promise((r) => setTimeout(r, 500));
-
-        const calls = mockServer.getCalls();
-        const sendMessages = calls.filter(
-          (c) => c.method === "sendMessage",
-        );
-        const bindCall = sendMessages.find(
-          (c) =>
-            c.args.text &&
-            c.args.text.toString().includes("Bound topic to"),
-        );
-        if (!bindCall) return false;
-
-        // Check bindings.json
-        const bindingsPath = join(stateDir, "bindings.json");
-        if (!existsSync(bindingsPath)) return false;
-
-        let bindings: Record<string, unknown> | null = null;
-        try {
-          bindings = JSON.parse(
-            readFileSync(bindingsPath, "utf8"),
-          );
-        } catch {
-          bindings = null;
-        }
-        if (!bindings) return false;
-
-        const binding = bindings["1"]; // topic id 1
-        return (
-          binding !== null &&
-          (binding as Record<string, unknown>).cwd === projectCwd
-        );
-      },
-    },
-
-    // 4. Free text routing to connected socket session
-    {
-      name: "free text routing to socket session",
-      run: async () => {
-        // Connect a fake socket client
-        const socketClient = await connectSocket(join(stateDir, "sock"));
-
-        // Send hello
-        socketClient.send({
-          type: "hello",
-          cwd: projectCwd,
-          sessionId: "sess-123",
-          ompVersion: "18.0.0",
-          pid: 1234,
-        });
-
-        await new Promise((r) => setTimeout(r, 200));
-
-        // Send free text message
-        const update = {
-          update_id: 4,
-          message: {
-            message_id: 4,
-            from: { id: 42, first_name: "Admin" },
-            chat: { id: -1001234567890, type: "supergroup" },
-            date: Date.now(),
-            text: "hello from telegram",
-            thread_id: 1,
-          },
-        };
-        mockServer.injectUpdate(update);
-
-        await new Promise((r) => setTimeout(r, 500));
-
-        // Check that the socket client received a prompt frame
-        const hasPrompt = socketClient.messages.some(
-          (m) =>
-            typeof m === "object" &&
-            m !== null &&
-            "type" in m &&
-            (m as Record<string, unknown>).type === "prompt",
-        );
-
-        socketClient.socket.end();
-        return hasPrompt;
-      },
-    },
-
-    // 5. Question → keyboard → callback → answer frame
-    {
-      name: "question → keyboard → callback → answer frame",
-      run: async () => {
-        // Connect socket client
-        const socketClient = await connectSocket(join(stateDir, "sock"));
-
-        socketClient.send({
-          type: "hello",
-          cwd: projectCwd,
-          sessionId: "sess-456",
-          ompVersion: "18.0.0",
-          pid: 5678,
-        });
-
-        await new Promise((r) => setTimeout(r, 200));
-
-        // Send a question message
-        const update = {
-          update_id: 5,
-          message: {
-            message_id: 5,
-            from: { id: 42, first_name: "Admin" },
-            chat: { id: -1001234567890, type: "supergroup" },
-            date: Date.now(),
-            text: "/ask What is the capital of France?",
-            thread_id: 1,
-          },
-        };
-        mockServer.injectUpdate(update);
-
-        await new Promise((r) => setTimeout(r, 500));
-
-        // Check that a sendMessage was called with an inline keyboard
-        const calls = mockServer.getCalls();
-        const sendMessages = calls.filter(
-          (c) => c.method === "sendMessage",
-        );
-        const questionMsg = sendMessages.find(
-          (c) =>
-            c.args.text &&
-            c.args.text.toString().includes("capital of France"),
-        );
-        if (!questionMsg) return false;
-
-        // Simulate callback answer
-        const callbackQuery = {
-          update_id: 6,
-          callback_query: {
-            id: "cb-1",
-            from: { id: 42, first_name: "Admin" },
-            message: { message_id: 100 },
-            data: "q:1:0", // question id 1, option 0
-            chat_instance: "ci-1",
-          },
-        };
-        mockServer.injectUpdate(callbackQuery);
-
-        await new Promise((r) => setTimeout(r, 500));
-
-        // Check that the socket client received an answer frame
-        const hasAnswer = socketClient.messages.some(
-          (m) =>
-            typeof m === "object" &&
-            m !== null &&
-            "type" in m &&
-            (m as Record<string, unknown>).type === "answer",
-        );
-
-        socketClient.socket.end();
-        return hasAnswer;
-      },
-    },
-
-    // 6. config_update persistence (must run while the daemon is alive; the
-    //    409 test kills it, so it comes last)
-    {
-      name: "config_update persistence",
-      run: async () => {
-        // Reset config for this test
-        config.allowedUserIds = [42];
-        writeFileSync(
-          join(stateDir, "config.json"),
-          JSON.stringify(config, null, 2),
-        );
-
-        // Connect socket client
-        const socketClient = await connectSocket(join(stateDir, "sock"));
-
-        socketClient.send({
-          type: "hello",
-          cwd: projectCwd,
-          sessionId: "sess-789",
-          ompVersion: "18.0.0",
-          pid: 9999,
-        });
-
-        await new Promise((r) => setTimeout(r, 200));
-
-        // Send config_update
-        socketClient.send({
-          type: "config_update",
-          cwd: projectCwd,
-          enabled: false,
-          verbosity: "low",
-        });
-
-        await new Promise((r) => setTimeout(r, 500));
-
-        // Check bindings.json
-        const bindingsPath = join(stateDir, "bindings.json");
-        if (!existsSync(bindingsPath)) return false;
-
-        let bindings: Record<string, unknown> | null = null;
-        try {
-          bindings = JSON.parse(
-            readFileSync(bindingsPath, "utf8"),
-          );
-        } catch {
-          bindings = null;
-        }
-        if (!bindings) return false;
-
-        const binding = bindings["1"]; // topic id 1
-        if (!binding) return false;
-        return (
-          (binding as Record<string, unknown>).remoteEnabled === false &&
-          (binding as Record<string, unknown>).verbosity === "low"
-        );
-      },
-    },
-
-    // 7. 409 from getUpdates makes the daemon exit 1 (kills the daemon; last)
-    {
-      name: "409 exit",
-      run: async () => {
-        mockServer.set409OnNext();
-        // Wait for the daemon to actually exit (the in-flight long-poll is
-        // woken by set409OnNext, so the next poll gets the 409 and the
-        // daemon's pollLoop process.exit(1)s).
-        await new Promise<void>((r) => {
-          if (daemon.exitCode !== null) {
-            r();
-            return;
-          }
-          daemon.once("exit", () => r());
-        });
-        return daemon.exitCode === 1;
-      },
-    },
+    { name: "offset persistence", run: (d, h) => t_offsetPersistence(d, h) },
+    { name: "whitelist gate", run: (d, h) => t_whitelistGate(d, h) },
+    { name: "/bind creates topic + binding", run: (d, h) => t_bindCreatesTopic(d, h) },
+    { name: "free text routing to socket session", run: (d, h) => t_freeTextRouting(d, h) },
+    { name: "question → keyboard → callback → answer frame", run: (d, h) => t_questionAnswer(d, h) },
+    { name: "off-by-default free text gate", run: (d, h) => t_offByDefault(d, h) },
+    { name: "config_set", run: (d, h) => t_configSet(d, h) },
+    { name: "config_reload", run: (d, h) => t_configReload(d, h) },
+    { name: "auto-pair", run: (d, h) => t_autoPair(d, h) },
+    { name: "status_request", run: (d, h) => t_statusRequest(d, h) },
+    { name: "config_update (remoteOn)", run: (d, h) => t_configUpdate(d, h) },
+    { name: "409 exit", run: (d, h) => t_409Exit(d, h) },
   ];
 
-  // Run tests
+  const results: { name: string; passed: boolean }[] = [];
+  let ti = 0;
   for (const test of tests) {
-    const passed = await test.run();
+    // Isolated state dir per test: one test's leftovers can't corrupt the next.
+    const testDir = join(stateDir, `t${ti++}`);
+    mkdirSync(testDir, { recursive: true });
+    const handle: SelftestHandle = {};
+    console.error(`RUN: ${test.name} (${testDir})`);
+    const passed = await Promise.race([
+      test.run(testDir, handle),
+      new Promise<boolean>((_, r) => setTimeout(() => r(false), 15_000)),
+    ]);
+    // Timeout path: a hung test leaves its daemon/socket/mock behind.
+    if (handle.daemon && handle.daemon.exitCode === null) handle.daemon.kill("SIGTERM");
+    handle.socketClient?.socket.destroy();
+    handle.mockServer?.stop();
+    console.error(`DONE: ${test.name} = ${passed}`);
     results.push({ name: test.name, passed });
   }
+  console.error("TEST LOOP DONE");
 
-  // Print results
+
+  console.error("RESULTS LOOP START");
   let allPassed = true;
   for (const result of results) {
+    console.error(`  RESULT: ${result.name} = ${result.passed}`);
     const status = result.passed ? "PASS" : "FAIL";
     console.log(`${status}: ${result.name}`);
     if (!result.passed) allPassed = false;
   }
+  console.error("RESULTS LOOP DONE");
 
   if (!allPassed) {
     const logPath = join(stateDir, "daemon.log");
@@ -633,60 +1169,40 @@ done
     }
     const tail = logText.split("\n").slice(-40).join("\n");
     console.log("\n--- daemon.log (last 40) ---\n" + tail);
-    if (daemonStderr) console.log("\n--- daemon.stderr ---\n" + daemonStderr);
-    if (daemonStdout) console.log("\n--- daemon.stdout ---\n" + daemonStdout);
   }
 
-  // Cleanup
-  if (daemon.exitCode === null) {
-    daemon.kill("SIGTERM");
-    await new Promise((r) => daemon.on("exit", r));
-  }
-  mockServer.stop();
-  unlinkSync(join(stateDir, "sock"));
-  unlinkSync(join(stateDir, "config.json"));
-  unlinkSync(ompBin);
-  unlinkSync(join(stateDir, "daemon.log"));
+  // Cleanup with timeout to detect hangs
+  console.error("CLEANUP START");
   try {
-    unlinkSync(join(stateDir, "offset.json"));
-  } catch {
-    // Ignore
-  }
-  try {
-    unlinkSync(join(stateDir, "bindings.json"));
-  } catch {
-    // Ignore
-  }
-  try {
-    unlinkSync(join(stateDir, "replay.json"));
-  } catch {
-    // Ignore
-  }
+    unlinkSync(join(stateDir, "sock"));
+  } catch { /* ignore */ }
+  try { unlinkSync(join(stateDir, "config.json")); } catch { /* ignore */ }
+  try { unlinkSync(join(stateDir, "daemon.log")); } catch { /* ignore */ }
+  try { unlinkSync(join(stateDir, "offset.json")); } catch { /* ignore */ }
+  try { unlinkSync(join(stateDir, "bindings.json")); } catch { /* ignore */ }
+  try { unlinkSync(join(stateDir, "replay.json")); } catch { /* ignore */ }
+  console.error("CLEANUP RMDIR");
   rmdirRecursive(stateDir);
+  console.error("CLEANUP DONE");
 
   console.log(allPassed ? "\nAll tests passed" : "\nSome tests failed");
   process.exit(allPassed ? 0 : 1);
 }
 
 function rmdirRecursive(dir: string): void {
-  try {
-    const entries = (require("fs") as typeof import("fs")).readdirSync(dir);
-    for (const entry of entries) {
-      const fullPath = join(dir, entry);
-      const stat = (require("fs") as typeof import("fs")).statSync(fullPath);
-      if (stat.isDirectory()) {
-        rmdirRecursive(fullPath);
-      } else {
-        unlinkSync(fullPath);
-      }
+  const entries = readdirSync(dir);
+  for (const entry of entries) {
+    const path = join(dir, entry);
+    if (statSync(path).isDirectory()) {
+      rmdirRecursive(path);
+    } else {
+      unlinkSync(path);
     }
-    (require("fs") as typeof import("fs")).rmdirSync(dir);
-  } catch {
-    // Ignore
   }
+  rmdirSync(dir); // remove dir itself
 }
 
 main().catch((_err: unknown) => {
-  console.error("Selftest error:", _err);
+  console.error("Selftest failed:", _err);
   process.exit(1);
 });

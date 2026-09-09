@@ -1,10 +1,20 @@
 // node.d.ts — Ambient type declarations for node builtins
 
+interface Event {
+  target?: unknown;
+}
+
 interface AbortSignal {
-  addEventListener(type: string, listener: (...args: unknown[]) => void): void;
-  removeEventListener(type: string, listener: (...args: unknown[]) => void): void;
-  onabort?: ((this: AbortSignal, ev: AbortSignal) => void) | null;
   aborted?: boolean;
+  onabort?: ((this: AbortSignal, ev: Event) => void) | null;
+  reason?: unknown;
+  throwIfAborted?(): void;
+}
+
+declare class AbortController {
+  constructor();
+  signal: AbortSignal;
+  abort(): void;
 }
 
 interface Buffer {

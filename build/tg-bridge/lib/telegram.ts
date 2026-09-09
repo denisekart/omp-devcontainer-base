@@ -160,7 +160,7 @@ export class TelegramClient {
     chatId: number | string,
     messageId: number,
     text: string,
-    options?: { parse_mode?: string; reply_markup?: unknown },
+    options?: { parse_mode?: string; reply_markup?: unknown; message_thread_id?: number },
   ): Promise<boolean> {
     const args: Record<string, unknown> = {
       chat_id: chatId,
@@ -196,14 +196,44 @@ export class TelegramClient {
     offset?: number,
     timeout?: number,
     limit?: number,
+    signal?: AbortSignal,
   ): Promise<TelegramUpdate[]> {
     const args: Record<string, unknown> = {};
     if (offset !== undefined) args.offset = offset;
     if (timeout !== undefined) args.timeout = timeout;
     if (limit !== undefined) args.limit = limit;
-    const resp = await this.call("getUpdates", args);
-    if (!resp.ok) return [];
-    return (resp.result as TelegramUpdate[]) ?? [];
+    const resp = await fetch(
+      `${this.config.apiBase}/v1/bot${this.config.token}/getUpdates`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: args ? JSON.stringify(args) : undefined,
+        signal,
+      },
+    );
+    const data = (await resp.json()) as TelegramApiResponse;
+    const call: TelegramCall = { method: "getUpdates", args, response: data, status: resp.status };
+    this.callbacks.onReply(call, data);
+    if (!resp.ok) {
+      this.logErr(`getUpdates HTTP ${resp.status}: ${data.description}`);
+      if (data.error_code === 409) throw new ConflictError(data.description ?? "409 conflict");
+      return [];
+    }
+    if (!data.ok) {
+      if (data.error_code === 409) {
+        this.logErr("getUpdates 409 conflict: another instance is polling this token");
+        throw new ConflictError(data.description ?? "409 conflict");
+      }
+      this.logErr(`getUpdates API error: ${data.description} (code ${data.error_code})`);
+      return [];
+    }
+    return (data.result as TelegramUpdate[]) ?? [];
+  }
+
+  async getChat(chatId: number | string): Promise<TelegramChat | null> {
+    const resp = await this.call("getChat", { chat_id: chatId });
+    if (!resp.ok) return null;
+    return resp.result as TelegramChat;
   }
 
   async startPolling(): Promise<void> {
