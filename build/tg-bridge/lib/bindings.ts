@@ -9,6 +9,7 @@ export interface Config {
   allowedUserIds: number[];
   editIntervalMs: number;
   apiBase?: string;
+  summaryEvery?: number;
 }
 
 export interface Binding {

@@ -14,6 +14,12 @@
     "paths": {
       "@oh-my-pi/pi-coding-agent/extensibility/extensions": [
         "/usr/local/install/global/node_modules/@oh-my-pi/pi-coding-agent/dist/types/extensibility/extensions/types"
+      ],
+      "@oh-my-pi/pi-ai": [
+        "/usr/local/install/global/node_modules/@oh-my-pi/pi-ai/dist/types/index"
+      ],
+      "@oh-my-pi/pi-tui": [
+        "/usr/local/install/global/node_modules/@oh-my-pi/pi-tui/dist/types/index"
       ]
     }
   },

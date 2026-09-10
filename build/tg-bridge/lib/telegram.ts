@@ -22,6 +22,9 @@ export interface TelegramMessage {
   text?: string;
   forum_topic_created?: { name: string };
   reply_to_message?: TelegramMessage;
+  /** Forum topic id on messages in non-general topics (Telegram `Message.message_thread_id`). */
+  message_thread_id?: number;
+  /** Id of the topic-creation message (only on `forum_topic_created` updates). */
   thread_id?: number;
 }
 
@@ -103,7 +106,7 @@ export class TelegramClient {
   }
 
   async call(method: string, args?: Record<string, unknown>): Promise<TelegramApiResponse> {
-    const url = `${this.config.apiBase}/v1/bot${this.config.token}/${method}`;
+    const url = `${this.config.apiBase}/bot${this.config.token}/${method}`;
     const body = args ? JSON.stringify(args) : undefined;
     const resp = await fetch(url, {
       method: "POST",
@@ -184,11 +187,10 @@ export class TelegramClient {
     return resp.result as { message_id: number };
   }
 
-  async sendChatAction(chatId: number | string, action: string): Promise<boolean> {
-    const resp = await this.call("sendChatAction", {
-      chat_id: chatId,
-      action,
-    });
+  async sendChatAction(chatId: number | string, action: string, opts?: { message_thread_id?: number }): Promise<boolean> {
+    const callArgs: Record<string, unknown> = { chat_id: chatId, action };
+    if (opts?.message_thread_id !== undefined) callArgs.message_thread_id = opts.message_thread_id;
+    const resp = await this.call("sendChatAction", callArgs);
     return resp.ok;
   }
 
@@ -203,7 +205,7 @@ export class TelegramClient {
     if (timeout !== undefined) args.timeout = timeout;
     if (limit !== undefined) args.limit = limit;
     const resp = await fetch(
-      `${this.config.apiBase}/v1/bot${this.config.token}/getUpdates`,
+      `${this.config.apiBase}/bot${this.config.token}/getUpdates`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -259,6 +261,67 @@ export class TelegramClient {
     for (let i = 0; i < text.length; i += maxLen) {
       chunks.push(text.slice(i, i + maxLen));
     }
+    return chunks;
+  }
+
+  /**
+   * Split HTML-formatted text into chunks of at most `maxLen` characters.
+   * Unlike chunkText, tracks open `<pre>`/`<code>`/`<b>` tags: a chunk
+   * boundary closes them, and the next chunk reopens them, so no chunk is
+   * ever sent with unbalanced entities (Telegram rejects those with "can't
+   * parse entities"). Prefers line boundaries; only hard-splits a single
+   * line that exceeds the limit on its own.
+   */
+  splitHtmlAware(text: string, maxLen = 4096): string[] {
+    if (text.length <= maxLen) return [text];
+    const openStack: string[] = [];
+    const chunks: string[] = [];
+    const tagRe = /<\/?(?:pre|code|b)>/g;
+    let buf = "";
+    const flush = (): void => {
+      if (!buf) return;
+      let out = buf;
+      for (let i = openStack.length - 1; i >= 0; i--) out += `</${openStack[i]}>`;
+      chunks.push(out);
+      let reopen = "";
+      for (const t of openStack) reopen += `<${t}>`;
+      buf = reopen;
+    };
+    for (const line of text.split("\n")) {
+      // Safety net for a single line longer than the limit: hard-split it,
+      // backing off from tag fragments so no "<" / ">" is cut in half.
+      const units: string[] = [];
+      let rest = line;
+      while (rest.length > maxLen - 20) {
+        let cut = maxLen - 20;
+        if (rest[cut] === "<" || rest[cut] === ">") cut--;
+        const lt = rest.lastIndexOf("<", cut - 1);
+        if (lt !== -1 && cut - lt <= 8) cut = lt;
+        units.push(rest.slice(0, cut));
+        rest = rest.slice(cut);
+      }
+      if (rest) units.push(rest);
+      for (const unit of units) {
+        const stackLenBefore = openStack.reduce((n, t) => n + t.length + 3, 0);
+        tagRe.lastIndex = 0;
+        let tag: RegExpExecArray | null;
+        while ((tag = tagRe.exec(unit))) {
+          const name = tag[0].replace(/<\/?|>/g, "");
+          if (tag[0].startsWith("</")) {
+            if (openStack[openStack.length - 1] === name) openStack.pop();
+          } else {
+            openStack.push(name);
+          }
+        }
+        // Reserve the worst-case closing cost so the chunk that ends this
+        // segment still fits after the tags are closed at its boundary.
+        const stackLenAfter = openStack.reduce((n, t) => n + t.length + 3, 0);
+        const reserved = stackLenAfter > stackLenBefore ? stackLenAfter : stackLenBefore;
+        if (buf && buf.length + unit.length + 1 + reserved > maxLen) flush();
+        buf += (buf ? "\n" : "") + unit;
+      }
+    }
+    flush();
     return chunks;
   }
 

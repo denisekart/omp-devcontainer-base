@@ -11,6 +11,7 @@ import {
   createWriteStream,
   existsSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
@@ -86,6 +87,10 @@ interface Daemon {
   qCounter: number;
   offset: number;
   socketPath: string;
+  /** topicId → currently-active turnId; live progress lines edit only the active turn's message. */
+  activeTurn: Map<number, string>;
+  typingTimers: Map<string, number>;
+  lastTodos: Map<string, { content: string; status: string }[]>;
 }
 
 function logMsg(d: Daemon, msg: string): void {
@@ -94,6 +99,16 @@ function logMsg(d: Daemon, msg: string): void {
   } catch {
     // ignore log write failures
   }
+}
+
+/** Human-readable age string from milliseconds. */
+function formatAge(ms: number): string {
+  if (ms < 0) return "in the future";
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s ago`;
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ago`;
 }
 
 // ─── Reverse lookup helpers ──────────────────────────────────────────────────
@@ -113,17 +128,24 @@ function nextTopicId(bindings: Map<number, Binding>): number {
 
 // ─── Telegram send helpers ───────────────────────────────────────────────────
 
+/** Escape for Telegram's HTML parse mode (the extension sends already-formatted HTML). */
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 async function tgSend(
   d: Daemon,
   text: string,
   topicId?: number,
   replyMarkup?: unknown,
+  html?: boolean,
 ): Promise<void> {
   try {
     const opts: { parse_mode?: string; reply_markup?: unknown; message_thread_id?: number } =
       {};
     if (topicId !== undefined) opts.message_thread_id = topicId;
     if (replyMarkup !== undefined) opts.reply_markup = replyMarkup;
+    if (html) opts.parse_mode = "HTML";
     await d.client.sendMessage(d.config.groupId, text, opts);
   } catch (err) {
     logMsg(d, `sendMessage failed: ${(err as Error).message}`);
@@ -142,12 +164,12 @@ async function publishQuestion(
   const keyboard = {
     inline_keyboard: [
       options.map((opt, idx) => ({
-        text: opt.length > 64 ? opt.slice(0, 64) + "…" : opt,
+        text: opt.length > 64 ? `${escapeHtml(opt.slice(0, 64))}…` : escapeHtml(opt),
         callback_data: `q:${handle}:${idx}`,
       })),
     ],
   };
-  await tgSend(d, title, topicId, keyboard);
+  await tgSend(d, title, topicId, keyboard, true);
 }
 
 function handleCallbackData(d: Daemon, data: string): void {
@@ -190,7 +212,8 @@ async function handleCommand(
           "/pair <cwd> — pair this topic with a workspace (auto-bind)",
           "/unpair — unbind this topic",
           "/remote on|off — toggle remote for this topic",
-          "Free text — steer (running) / new turn (idle)",
+          "Free text — steer (running) / new turn (idle); trailing `??` always delivers the next turn's final answer",
+          "/btw <question> — side question, answered immediately (does not steer the turn)",
           "/pair /unpair — DM pairing (admin)",
         ].join("\n"),
         topicId,
@@ -217,16 +240,39 @@ async function handleCommand(
 
     case "/status": {
       const b = binding;
-      const session = cwd ? d.socket.getSession(cwd) : undefined;
+      const cwdStr: string | undefined = b?.cwd;
+      const session = cwdStr ? d.socket.getSession(cwdStr) : undefined;
       const remoteOn = session?.remoteOn ?? false;
       const sessionCount = d.socket.getSessionCount();
-      const lines = [
+      const lines: string[] = [
         `Workspace: ${b?.cwd ?? "(unbound)"}`,
         `Remote: ${remoteOn ? "on" : "off"}  Verbosity: ${b?.verbosity ?? "mid"}`,
         `Live session: ${session ? `${session.sessionId} (turn ${session.turnLive ? "live" : "idle"})` : "none"}`,
         `Active sessions: ${sessionCount}`,
-        `Last event: ${b ? new Date(b.lastEventAt).toISOString() : "never"}`,
       ];
+      if (session) {
+        const ageMs = Date.now() - session.lastEventAt;
+        const ageStr = formatAge(ageMs);
+        lines.push(`Last event: ${ageStr}`);
+        if (cwdStr) {
+          const todos = d.lastTodos.get(cwdStr);
+          if (todos && todos.length > 0) {
+            lines.push("Todos:");
+            for (const t of todos.slice(0, 5)) {
+              lines.push(`  - ${t.content} [${t.status}]`);
+            }
+          }
+        }
+      } else {
+        lines.push("Last event: no session connected");
+        const todos = cwdStr ? d.lastTodos.get(cwdStr) : undefined;
+        if (todos && todos.length > 0) {
+          lines.push("Last-known todos:");
+          for (const t of todos.slice(0, 5)) {
+            lines.push(`  - ${t.content} [${t.status}]`);
+          }
+        }
+      }
       await tgSend(d, lines.join("\n"), topicId);
       return;
     }
@@ -253,7 +299,7 @@ async function handleCommand(
         return;
       }
       for (const e of entries) {
-        for (const chunk of d.client.chunkText(e.text)) await tgSend(d, chunk, topicId);
+        for (const chunk of d.client.splitHtmlAware(e.text)) await tgSend(d, chunk, topicId, undefined, true);
       }
       return;
     }
@@ -264,17 +310,38 @@ async function handleCommand(
       const title = arg || "(no question text)";
       const options = ["Confirm"];
       const handle = String(++d.qCounter);
-      d.pending.set(handle, {
-        cwd: cwd ?? "",
-        questionId: handle,
-        options,
-      });
+      d.pending.set(handle, { cwd: cwd ?? "", questionId: handle, options });
       if (!cwd) {
         await tgSend(d, `Cannot answer: topic not bound. Question discarded.`, topicId);
         d.pending.delete(handle);
         return;
       }
-      await publishQuestion(d, topicId, title, options, handle);
+      await publishQuestion(d, topicId, escapeHtml(title), options, handle);
+      return;
+    }
+    case "/btw": {
+      // Side question: answered immediately by a one-shot AI call in the
+      // extension (not routed into the running turn).
+      if (!cwd) {
+        await tgSend(d, "This topic is not bound.", topicId);
+        return;
+      }
+      if (!arg) {
+        await tgSend(d, "Usage: /btw <question> — side question, answered immediately", topicId);
+        return;
+      }
+      const session = d.socket.getSession(cwd);
+      if (!session || !session.remoteOn) {
+        await tgSend(d, "No live session (or remote is off).", topicId);
+        return;
+      }
+      await tgSend(d, "💭 Thinking…", topicId);
+      const sent = d.socket.sendFrame(cwd, { type: "btw", question: arg });
+      if (!sent) {
+        await tgSend(d, "Failed to deliver question to session.", topicId);
+        return;
+      }
+      logMsg(d, `btw question for ${cwd}: ${arg.slice(0, 80)}`);
       return;
     }
 
@@ -383,8 +450,8 @@ async function handleMessage(d: Daemon, msg: TelegramMessage): Promise<void> {
     return;
   }
 
-  // In-group: must be a forum topic (thread_id) to route to a workspace.
-  const topicId = msg.thread_id ?? msg.reply_to_message?.thread_id ?? 0;
+  // In-group: must be a forum topic (message_thread_id) to route to a workspace.
+  const topicId = msg.message_thread_id ?? msg.reply_to_message?.message_thread_id ?? 0;
 
   if (text.trim().startsWith("/") && text.includes("\n") === false) {
     // A command.
@@ -417,7 +484,15 @@ async function handleMessage(d: Daemon, msg: TelegramMessage): Promise<void> {
   const ok = d.socket.sendFrame(binding.cwd, { type: "prompt", text, deliverAs });
   if (!ok) {
     await tgSend(d, "Failed to deliver prompt to session.", topicId);
+    return;
   }
+  await tgSend(
+    d,
+    deliverAs === "steer"
+      ? "🎯 Got it — steering the running turn."
+      : "🎯 Got it — starting on it.",
+    topicId,
+  );
 }
 
 function writeConfigLive(cfg: Config): void {
@@ -426,6 +501,16 @@ function writeConfigLive(cfg: Config): void {
 }
 
 // ─── Socket callbacks (ext → daemon) ─────────────────────────────────────────
+
+// Coerce a raw groupId (number or string) into a normalized negative group id.
+// Telegram group/supergroup ids are negative; a positive value is negated.
+// Returns null when the value is missing or not an integer.
+function coerceGroupId(value: unknown): number | null {
+  const n = typeof value === "string" || typeof value === "number" ? Number(value) : NaN;
+  if (!Number.isFinite(n)) return null;
+  const g = Math.trunc(n);
+  return g > 0 ? -g : g;
+}
 
 function buildSocketCallbacks(d: Daemon) {
   return {
@@ -446,6 +531,7 @@ function buildSocketCallbacks(d: Daemon) {
         type: "config",
         enabled: state.remoteOn,
         verbosity: state.verbosity,
+        summaryEvery: d.config.summaryEvery ?? 8,
       });
       logMsg(d, `hello from ${cwd} (${state.sessionId}) topic=${topicId ?? "none"} remoteOn=${state.remoteOn}`);
     },
@@ -455,23 +541,88 @@ function buildSocketCallbacks(d: Daemon) {
       const session = d.socket.getSession(cwd);
       if (topicId === undefined || !session || !session.remoteOn) return;
       const verbosity = session.verbosity;
-      // Replay capture: keep the rendered text for /replay continuity.
-      if (kind === "message") {
+
+      if (kind === "turn_start") {
+        // Start typing indicator for this cwd.
+        // Send one immediate typing.
+        if (topicId !== undefined) {
+          void d.client.sendChatAction(d.config.groupId, "typing", { message_thread_id: topicId }).catch(() => {});
+        }
+        if (!d.typingTimers.has(cwd)) {
+          const timer = setInterval(() => {
+            const s = d.socket.getSession(cwd);
+            if (!s || !s.turnLive || !s.remoteOn) {
+              clearInterval(timer);
+              d.typingTimers.delete(cwd);
+              return;
+            }
+            void d.client.sendChatAction(d.config.groupId, "typing", { message_thread_id: topicId }).catch(() => {});
+          }, 4000);
+          d.typingTimers.set(cwd, timer);
+        }
+        // New turn gets its own live message; previous turn stays final.
+        d.activeTurn.set(topicId, typeof data === "string" ? data : `t${Date.now().toString(36)}`);
+      } else if (kind === "turn_end") {
+        const turnId = turnIdFor(d, topicId);
+        d.activeTurn.delete(topicId);
+        void d.render.finalizeTurn(d.config.groupId, topicId, turnId).catch(() => {});
+        d.socket.sendFrame(cwd, { type: "bye" });
+        // Clear typing for this cwd.
+        const timer = d.typingTimers.get(cwd);
+        if (timer) {
+          clearInterval(timer);
+          d.typingTimers.delete(cwd);
+        }
+      } else if (kind === "todo_state") {
+        // Cache todo state; do NOT render.
+        if (data && typeof data === "object" && "todos" in data) {
+          const raw = (data as Record<string, unknown>).todos;
+          if (Array.isArray(raw)) {
+            const todos: { content: string; status: string }[] = [];
+            for (const item of raw) {
+              if (item && typeof item === "object" && "content" in item && "status" in item) {
+                const c = (item as Record<string, unknown>).content;
+                const s = (item as Record<string, unknown>).status;
+                if (typeof c === "string" && typeof s === "string") {
+                  todos.push({ content: c, status: s });
+                }
+              }
+            }
+            d.lastTodos.set(cwd, todos);
+          }
+        }
+      } else if (kind === "summary") {
+        // Send a standalone summary message.
+        if (data && typeof data === "object" && "text" in data) {
+          const text = (data as Record<string, unknown>).text;
+          const textStr = typeof text === "string" ? text : "";
+          void tgSend(d, "📊 " + textStr, topicId, undefined, true).catch(() => {});
+        }
+      } else if (kind === "error") {
+        // Render error at ALL verbosity levels.
+        if (data && typeof data === "object" && "toolName" in data) {
+          const d2 = data as Record<string, unknown>;
+          const toolName = typeof d2.toolName === "string" ? d2.toolName : "";
+          const text = typeof d2.text === "string" ? d2.text : "";
+          void renderLine(d, topicId, "⚠️ " + escapeHtml(toolName) + (text ? ": " + escapeHtml(text) : "")).catch(() => {});
+        }
+      } else if (kind === "todo") {
+        if (verbosity === "high" || verbosity === "xhigh") {
+          const text = typeof data === "string" ? data : JSON.stringify(data);
+          void renderLine(d, topicId, text).catch(() => {});
+        }
+      } else if (kind === "btw") {
+        // Side-question answer: standalone 💬 message (does not touch the
+        // active turn's live message).
+        if (data && typeof data === "object" && "text" in data) {
+          const text = (data as Record<string, unknown>).text;
+          const textStr = typeof text === "string" ? text : "";
+          void tgSend(d, "💬 " + textStr, topicId, undefined, true).catch(() => {});
+        }
+      } else if (kind === "message") {
         const text = typeof data === "string" ? data : JSON.stringify(data);
         addReplayEntry(d.replay, topicId, { text });
         writeReplay(d.replay);
-        void renderLine(d, topicId, text).catch((e) =>
-          logMsg(d, `render failed: ${(e as Error).message}`),
-        );
-      } else if (kind === "turn_start" || kind === "turn_end") {
-        const label = kind === "turn_start" ? "— turn start —" : "— turn end —";
-        addReplayEntry(d.replay, topicId, { text: label });
-        void renderLine(d, topicId, label).catch(() => {});
-        if (kind === "turn_end") {
-          d.socket.sendFrame(cwd, { type: "bye" });
-        }
-      } else if ((kind === "error" || kind === "todo") && (verbosity === "high" || verbosity === "xhigh")) {
-        const text = typeof data === "string" ? data : JSON.stringify(data);
         void renderLine(d, topicId, text).catch(() => {});
       }
     },
@@ -492,14 +643,7 @@ function buildSocketCallbacks(d: Daemon) {
       if (session && enabled !== undefined) session.remoteOn = enabled;
       if (session && verbosity !== undefined) session.verbosity = verbosity;
       const topicId = topicForCwd(d, cwd);
-      if (topicId !== undefined) {
-        const b = d.bindings.get(topicId);
-        if (b) {
-          if (enabled !== undefined) b.remoteOn = enabled;
-          if (verbosity !== undefined) b.verbosity = verbosity;
-          updateBindingEvent(d.bindings, topicId, session?.sessionId, session?.sessionFile);
-        }
-      } else {
+      if (topicId === undefined) {
         // No binding for this cwd yet — create one so the persisted state survives.
         const newTopicId = nextTopicId(d.bindings);
         setBindingForTopic(d.bindings, newTopicId, cwd);
@@ -509,8 +653,22 @@ function buildSocketCallbacks(d: Daemon) {
           if (verbosity !== undefined) b.verbosity = verbosity;
           updateBindingEvent(d.bindings, newTopicId, session?.sessionId, session?.sessionFile);
         }
+      } else {
+        const b = d.bindings.get(topicId);
+        if (b) {
+          if (enabled !== undefined) b.remoteOn = enabled;
+          if (verbosity !== undefined) b.verbosity = verbosity;
+          updateBindingEvent(d.bindings, topicId, session?.sessionId, session?.sessionFile);
+        }
       }
       writeBindings(d.bindings);
+      // Forward updated config (including summaryEvery) to the extension.
+      d.socket.sendFrame(cwd, {
+        type: "config",
+        enabled: session?.remoteOn,
+        verbosity: session?.verbosity,
+        summaryEvery: d.config.summaryEvery ?? 8,
+      });
       logMsg(d, `config_update ${cwd}: remoteOn=${enabled ?? "unchanged"} verbosity=${session?.verbosity ?? "unchanged"}`);
     },
 
@@ -578,13 +736,24 @@ function buildSocketCallbacks(d: Daemon) {
             ok = false;
             logMsg(d, `pair: getMe failed: ${(err as Error).message}`);
           }
+          if (ok && type === "pair_validate_group") {
+            const groupId = coerceGroupId(frame.groupId);
+            if (groupId === null) {
+              ok = false;
+              logMsg(d, "pair_validate_group: missing/invalid groupId");
+            } else {
+              try {
+                const chat = await probe.getChat(groupId);
+                ok = chat !== null;
+                if (!ok) logMsg(d, `pair_validate_group: getChat(${groupId}) failed`);
+              } catch (err) {
+                ok = false;
+                logMsg(d, `pair_validate_group: getChat threw: ${(err as Error).message}`);
+              }
+            }
+          }
           if (ok && type === "pair") {
-            const groupId =
-              typeof frame.groupId === "number"
-                ? frame.groupId
-                : frame.groupId === undefined
-                  ? d.config.groupId
-                  : Number(frame.groupId) || d.config.groupId;
+            const groupId = coerceGroupId(frame.groupId) ?? d.config.groupId;
             const cfg: Config = {
               botToken: token,
               groupId,
@@ -615,11 +784,16 @@ function buildSocketCallbacks(d: Daemon) {
   };
 }
 
-async function renderLine(d: Daemon, topicId: number, line: string): Promise<void> {
-  // One live message per (topic, "turn"). We use a stable turnId per topic so
-  // successive lines edit the same message, respecting the edit interval.
-  const turnId = `topic-${topicId}`;
-  await d.render.addLine(d.config.groupId, topicId, turnId, line);
+// Progress rendering: one live message per (topic, turn). The daemon tracks
+// the active turn per topic (set by turn_start/turn_end frames); lines only
+// ever edit the active turn's message, so finished turns keep their own
+// final message and are never re-edited — no repeated old-turn content.
+function turnIdFor(d: Daemon, topicId: number): string {
+  return d.activeTurn.get(topicId) ?? `t${Date.now().toString(36)}`;
+}
+
+function renderLine(d: Daemon, topicId: number, line: string): Promise<void> {
+  return d.render.addLine(d.config.groupId, topicId, turnIdFor(d, topicId), line);
 }
 
 // ─── Telegram update dispatch ────────────────────────────────────────────────
@@ -724,6 +898,9 @@ function buildDaemon(): Daemon | null {
     bindings: readBindings(),
     replay: readReplay(),
     pending: new Map(),
+    activeTurn: new Map(),
+    typingTimers: new Map(),
+    lastTodos: new Map(),
     qCounter: 0,
     offset: readOffset(),
     socketPath,
@@ -740,6 +917,14 @@ async function main(): Promise<void> {
   }
   logMsg(d, `starting daemon (api=${d.apiBase}, sock=${d.socketPath})`);
 
+  // Belt-and-braces: drop any stale sock file left by a crashed daemon so the
+  // fresh listener binds cleanly (start() also unlinks, but only after its
+  // own guard passes — an orphan file can race that path).
+  try {
+    if (existsSync(d.socketPath)) unlinkSync(d.socketPath);
+  } catch {
+    // Ignore: start() will still attempt its own unlink.
+  }
   // Socket server for the in-session extension (start() installs the callbacks).
   d.socket.setLogStream(d.log);
   d.socket.start(d.socketPath, buildSocketCallbacks(d));

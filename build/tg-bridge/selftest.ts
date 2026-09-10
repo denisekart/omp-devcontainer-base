@@ -15,6 +15,7 @@ const REPO_ROOT = dirname(dirname(process.cwd()));
 
 interface MockCall {
   method: string;
+  path: string;
   args: Record<string, unknown>;
   response?: unknown;
   error_code?: number;
@@ -42,6 +43,18 @@ class MockTelegramServer {
   private nextUpdateId = 0;
   private port = 0;
   private httpServer: import("http").Server | null = null;
+  private apiResults: Record<string, unknown> = {};
+  private apiErrors: Record<string, { description: string; error_code: number }> = {};
+
+  // Make a non-getUpdates method (e.g. getMe, getChat) return {ok:true, result}.
+  setApiResult(method: string, result: unknown): void {
+    this.apiResults[method] = result;
+  }
+
+  // Make a non-getUpdates method return {ok:false, error_code, description}.
+  setApiError(method: string, error_code: number, description: string): void {
+    this.apiErrors[method] = { description, error_code };
+  }
 
   getCalls(): MockCall[] {
     return this.calls;
@@ -100,6 +113,7 @@ class MockTelegramServer {
 
             const call: MockCall = {
               method,
+              path,
               args: parsed as Record<string, unknown>,
             };
 
@@ -135,6 +149,20 @@ class MockTelegramServer {
               return;
             }
 
+            const apiError = this.apiErrors[method];
+            if (apiError) {
+              call.response = { ok: false, error_code: apiError.error_code, description: apiError.description };
+              this.calls.push(call);
+              respond(200, call.response);
+              return;
+            }
+            const apiResult = this.apiResults[method];
+            if (apiResult !== undefined) {
+              call.response = { ok: true, result: apiResult };
+              this.calls.push(call);
+              respond(200, call.response);
+              return;
+            }
             call.response = { ok: true };
             this.calls.push(call);
             respond(200, call.response);
@@ -244,6 +272,51 @@ function readJson(path: string): Record<string, unknown> | null {
 function writeJson(path: string, obj: unknown): void {
   writeFileSync(path, JSON.stringify(obj, null, 2));
 }
+// Spawn the daemon pointed at an isolated state dir + a mock Telegram API.
+// Returns the child so the caller can connect sockets and assert.
+function spawnDaemonWithMock(
+  stateDir: string,
+  port: number,
+  extraConfig: Record<string, unknown> = {},
+): ChildProcess {
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+    ...extraConfig,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+  return spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+// Wait for a socket client to receive a frame whose `type` matches.
+async function waitForFrame(
+  client: { messages: unknown[] },
+  type: string,
+  timeoutMs = 2000,
+): Promise<Record<string, unknown> | null> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const hit = client.messages.find(
+      (m) =>
+        typeof m === "object" &&
+        m !== null &&
+        (m as Record<string, unknown>).type === type,
+    );
+    if (hit) return hit as Record<string, unknown>;
+    await sleep(25);
+  }
+  return null;
+}
 
 // --- Test cases ------------------------------------------------------------
 
@@ -303,7 +376,7 @@ async function t_offsetPersistence(stateDir: string, handle: SelftestHandle): Pr
       chat: { id: -1001234567890, type: "supergroup" },
       date: Date.now(),
       text: "hello",
-      thread_id: 1,
+      message_thread_id: 1,
     },
   });
   await sleep(200);
@@ -324,6 +397,16 @@ async function t_offsetPersistence(stateDir: string, handle: SelftestHandle): Pr
       (m as Record<string, unknown>).type === "prompt" &&
       (m as Record<string, unknown>).text === "hello",
   );
+
+  // Regression: the daemon must hit the real Bot API path shape
+  // `/bot<token>/<method>` — a stray segment (e.g. a historical `/v1`)
+  // 404s against api.telegram.org while the path-agnostic mock kept passing.
+  const getUpdatesPaths = mockServer
+    .getCalls()
+    .filter((c) => c.method === "getUpdates")
+    .map((c) => c.path);
+  if (getUpdatesPaths.length === 0) return false;
+  if (!getUpdatesPaths.every((p) => /^\/bot[^/]+\/getUpdates$/.test(p))) return false;
   if (!prompt) return false;
 
   daemon.kill("SIGTERM");
@@ -375,7 +458,7 @@ async function t_offByDefault(stateDir: string, handle: SelftestHandle): Promise
       chat: { id: -1001234567890, type: "supergroup" },
       date: Date.now(),
       text: "hello",
-      thread_id: 1,
+      message_thread_id: 1,
     },
   });
   await sleep(200);
@@ -418,7 +501,7 @@ async function t_offByDefault(stateDir: string, handle: SelftestHandle): Promise
       chat: { id: -1001234567890, type: "supergroup" },
       date: Date.now(),
       text: "hello again",
-      thread_id: 1,
+      message_thread_id: 1,
     },
   });
   await sleep(200);
@@ -730,7 +813,7 @@ async function t_whitelistGate(stateDir: string, handle: SelftestHandle): Promis
       chat: { id: -1001234567890, type: "supergroup" },
       date: Date.now(),
       text: "hello",
-      thread_id: 1,
+      message_thread_id: 1,
     },
   });
   await sleep(200);
@@ -804,7 +887,7 @@ async function t_freeTextRouting(stateDir: string, handle: SelftestHandle): Prom
       chat: { id: -1001234567890, type: "supergroup" },
       date: Date.now(),
       text: "hello from telegram",
-      thread_id: 1,
+      message_thread_id: 1,
     },
   });
   await sleep(200);
@@ -884,7 +967,7 @@ async function t_questionAnswer(stateDir: string, handle: SelftestHandle): Promi
       chat: { id: -1001234567890, type: "supergroup" },
       date: Date.now(),
       text: "/ask What is the capital of France?",
-      thread_id: 1,
+      message_thread_id: 1,
     },
   });
   await sleep(200);
@@ -1034,7 +1117,7 @@ async function t_bindCreatesTopic(stateDir: string, handle: SelftestHandle): Pro
       chat: { id: -1001234567890, type: "supergroup" },
       date: Date.now(),
       text: `/bind ${projectCwd}`,
-      thread_id: 1,
+      message_thread_id: 1,
     },
   });
   await sleep(200);
@@ -1047,6 +1130,10 @@ async function t_bindCreatesTopic(stateDir: string, handle: SelftestHandle): Pro
       c.args.text.toString().includes("Bound topic to"),
   );
   if (!bindCall) return false;
+  // The /bind message arrived in forum topic 1 (message_thread_id: 1); the
+  // confirmation must be sent back into that same topic — a general-topic
+  // reply (no message_thread_id) or a wrong thread is a routing regression.
+  if (bindCall.args.message_thread_id !== 1) return false;
 
   const bindingsPath = join(stateDir, "bindings.json");
   if (!existsSync(bindingsPath)) return false;
@@ -1106,6 +1193,481 @@ async function t_409Exit(stateDir: string, handle: SelftestHandle): Promise<bool
   return daemon.exitCode === 1;
 }
 
+async function t_pairValidateGroup(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  mockServer.setApiResult("getMe", { id: 1, username: "mockbot", first_name: "Mock" });
+  mockServer.setApiResult("getChat", {
+    id: -1001234567890,
+    type: "supergroup",
+    title: "grp",
+  });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  const socketClient = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = socketClient;
+  socketClient.send({
+    type: "hello",
+    cwd: projectCwd,
+    sessionId: "sess-pv",
+    ompVersion: "18.0.0",
+    pid: 4321,
+  });
+  await sleep(100);
+
+  // Known group (getChat ok) → pair_done success:true.
+  const before = socketClient.messages.length;
+  socketClient.send({ type: "pair_validate_group", token: "test:token", groupId: -1001234567890 });
+  await sleep(250);
+  const firstDone = (socketClient.messages
+    .slice(before)
+    .find(
+      (m) =>
+        typeof m === "object" &&
+        m !== null &&
+        "type" in m &&
+        (m as Record<string, unknown>).type === "pair_done",
+    ) as Record<string, unknown> | undefined);
+  const successKnown = firstDone?.success === true;
+
+  // Flip getChat to a failure → pair_done success:false (real getChat, not a
+  // fake always-true).
+  mockServer.setApiError("getChat", 400, "Bad Request: peer not found");
+  const before2 = socketClient.messages.length;
+  socketClient.send({ type: "pair_validate_group", token: "test:token", groupId: -1001234567890 });
+  await sleep(250);
+  const secondDone = (socketClient.messages
+    .slice(before2)
+    .find(
+      (m) =>
+        typeof m === "object" &&
+        m !== null &&
+        "type" in m &&
+        (m as Record<string, unknown>).type === "pair_done",
+    ) as Record<string, unknown> | undefined);
+  const successUnknown = secondDone?.success === false;
+
+  const getChatCalled = mockServer.getCalls().some((c) => c.method === "getChat");
+
+  socketClient.socket.end();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+
+  return successKnown && successUnknown && getChatCalled;
+}
+
+async function t_staleSocketReplaced(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  mockServer.setApiResult("getMe", { id: 1, username: "mockbot", first_name: "Mock" });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+  // Plant a stale non-socket file at the sock path, as a crashed daemon leaves.
+  writeFileSync(join(stateDir, "sock"), "stale-sock");
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  const socketClient = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = socketClient;
+  socketClient.send({
+    type: "hello",
+    cwd: projectCwd,
+    sessionId: "sess-stale",
+    ompVersion: "18.0.0",
+    pid: 4322,
+  });
+  await sleep(100);
+
+  // Prove the socket is the live daemon (not the stale file): a pair_validate
+  // must round-trip a success.
+  socketClient.send({ type: "pair_validate", token: "test:token" });
+  await sleep(250);
+  const pairDone = (socketClient.messages.find(
+    (m) =>
+      typeof m === "object" &&
+      m !== null &&
+      "type" in m &&
+      (m as Record<string, unknown>).type === "pair_done",
+  ) as Record<string, unknown> | undefined);
+
+  socketClient.socket.end();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+
+  return pairDone?.success === true;
+}
+
+// Per-turn message isolation: each turn's rendered lines must land in its own
+// Telegram message; a finalized turn's content must never be re-edited into,
+// and no single message may mix lines from two turns.
+async function t_turnIsolation(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+
+  await sleep(200);
+
+  // The mock returns the same message_id for every sendMessage, so assertions
+  // key on text content, not ids.
+  mockServer.setApiResult("sendMessage", { message_id: 1 });
+  mockServer.setApiResult("editMessageText", true);
+
+  const socketClient = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = socketClient;
+  socketClient.send({
+    type: "hello",
+    cwd: projectCwd,
+    sessionId: "test-turns",
+    ompVersion: "18.0.0",
+    pid: process.pid,
+  });
+  await sleep(100);
+  socketClient.send({
+    type: "config_update",
+    cwd: projectCwd,
+    remoteOn: true,
+    verbosity: "mid",
+  });
+  await sleep(100);
+
+  // Turn 1: start → two message lines → end (finalize flushes via edit).
+  socketClient.send({ type: "progress", kind: "turn_start", data: "1" });
+  await sleep(50);
+  socketClient.send({ type: "progress", kind: "message", data: "turn one line A" });
+  await sleep(200);
+  socketClient.send({ type: "progress", kind: "message", data: "turn one line B" });
+  await sleep(200);
+  socketClient.send({ type: "progress", kind: "turn_end", data: "1" });
+  await sleep(200);
+
+  // Turn 2: start → one line, which must be a fresh message.
+  socketClient.send({ type: "progress", kind: "turn_start", data: "2" });
+  await sleep(200);
+  socketClient.send({ type: "progress", kind: "message", data: "turn two line A" });
+  await sleep(400);
+
+  const calls = mockServer.getCalls();
+  const rendered = calls.filter((c) => c.method === "sendMessage" || c.method === "editMessageText");
+  const textOf = (c: MockCall) => String((c.args as Record<string, unknown>).text ?? "");
+  const sentTexts = rendered.filter((c) => c.method === "sendMessage").map(textOf);
+  const editedTexts = rendered.filter((c) => c.method === "editMessageText").map(textOf);
+
+  if (rendered.length === 0) return false;
+
+  // (a) Every rendered send/edit uses HTML parse mode.
+  const allHtml = rendered.every(
+    (c) => (c.args as Record<string, unknown>).parse_mode === "HTML",
+  );
+
+  // (b) Turn 1's finalized content was edited into its own message and does
+  // not contain any turn 2 line.
+  const finalTurnOne = editedTexts.find((t) => t.includes("turn one line B"));
+  if (!finalTurnOne || finalTurnOne.includes("turn two")) return false;
+
+  // (c) Turn 2's line appears in a fresh message that never mentions turn 1.
+  const turnTwoSend = sentTexts.find(
+    (t) => t.includes("turn two line A") && !t.includes("turn one"),
+  );
+  if (!turnTwoSend) return false;
+
+  // (d) No single message mixes both turns.
+  const noMix = [...sentTexts, ...editedTexts].every(
+    (t) => !(t.includes("turn one") && t.includes("turn two")),
+  );
+
+  socketClient.socket.end();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+
+  return allHtml && noMix;
+}
+// Per-cwd session eviction: a second hello for the same cwd destroys the
+// first stream (single session per workspace contract) while other cwds are
+// untouched.
+async function t_evictStaleSession(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const daemon = spawnDaemonWithMock(stateDir, port);
+  handle.daemon = daemon;
+  await sleep(200);
+
+  const c1 = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = c1;
+  c1.send({ type: "hello", cwd: projectCwd, sessionId: "sess-one", ompVersion: "18.0.0", pid: process.pid });
+  const cfg1 = await waitForFrame(c1, "config");
+  if (!cfg1) return false;
+
+  const c3 = await connectSocket(join(stateDir, "sock"));
+  const otherCwd = join(stateDir, "other");
+  mkdirSync(otherCwd, { recursive: true });
+  c3.send({ type: "hello", cwd: otherCwd, sessionId: "sess-other", ompVersion: "18.0.0", pid: process.pid });
+  const cfg3 = await waitForFrame(c3, "config");
+  if (!cfg3) return false;
+
+  // Same-cwd hello from a second stream must evict c1's stream.
+  const c2 = await connectSocket(join(stateDir, "sock"));
+  c2.send({ type: "hello", cwd: projectCwd, sessionId: "sess-two", ompVersion: "18.0.0", pid: process.pid });
+  const cfg2 = await waitForFrame(c2, "config");
+  if (!cfg2) return false;
+  await sleep(200);
+
+  let daemonLog = "";
+  try {
+    daemonLog = readFileSync(join(stateDir, "daemon.log"), "utf8");
+  } catch {
+    daemonLog = "";
+  }
+  const evicted = daemonLog.includes("evicting stale session");
+  // The old stream was destroyed by the same-cwd hello; cfg2 proves the new
+  // session is live and receiving frames.
+
+  c1.socket.destroy();
+  c2.socket.destroy();
+  c3.socket.destroy();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+  return evicted && !!cfg2 && !!cfg3;
+}
+
+// Frames from an evicted (old) same-cwd stream must not render Telegram
+// messages — the daemon routes progress through the current session only.
+async function t_noDuplicateFramesPerCwd(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const daemon = spawnDaemonWithMock(stateDir, port);
+  handle.daemon = daemon;
+  await sleep(200);
+
+  const old = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = old;
+  old.send({ type: "hello", cwd: projectCwd, sessionId: "old-sess", ompVersion: "18.0.0", pid: process.pid });
+  old.send({ type: "config_update", cwd: projectCwd, remoteOn: true, verbosity: "mid" });
+  await sleep(200);
+
+  const fresh = await connectSocket(join(stateDir, "sock"));
+  fresh.send({ type: "hello", cwd: projectCwd, sessionId: "new-sess", ompVersion: "18.0.0", pid: process.pid });
+  await waitForFrame(fresh, "config");
+  fresh.send({ type: "config_update", cwd: projectCwd, remoteOn: true, verbosity: "mid" });
+  await sleep(200);
+
+  // A progress frame from the evicted stream must not render to Telegram.
+  old.send({ type: "progress", kind: "message", data: "stale-frame-text" });
+  await sleep(300);
+
+  const calls = mockServer.getCalls();
+  const staleRendered = calls.some((c) =>
+    (c.method === "sendMessage" || c.method === "editMessageText") &&
+    String(c.args.text ?? "").includes("stale-frame-text"),
+  );
+  const clean = !staleRendered;
+
+  old.socket.destroy();
+  fresh.socket.destroy();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+  return clean;
+}
+
+// Unchanged-text edit skip: finalizing a turn whose text was already sent
+// must not call editMessageText again (kills the 'message is not modified'
+// 400 spam).
+async function t_skipUnchangedEdit(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const daemon = spawnDaemonWithMock(stateDir, port, { editIntervalMs: 100 });
+  handle.daemon = daemon;
+  await sleep(200);
+
+  mockServer.setApiResult("sendMessage", { message_id: 1 });
+  mockServer.setApiError("editMessageText", 400, "message is not modified");
+
+  const c = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = c;
+  c.send({ type: "hello", cwd: projectCwd, sessionId: "skip-test", ompVersion: "18.0.0", pid: process.pid });
+  c.send({ type: "config_update", cwd: projectCwd, remoteOn: true, verbosity: "mid" });
+  await sleep(200);
+
+  c.send({ type: "progress", kind: "turn_start", data: "1" });
+  await sleep(50);
+  c.send({ type: "progress", kind: "message", data: "skip-a" });
+  await sleep(300);
+  // turn_end finalizes; the text equals the already-sent line, so no extra
+  // editMessageText for identical text.
+  c.send({ type: "progress", kind: "turn_end", data: "1" });
+  await sleep(300);
+
+  const edits = mockServer.getCalls().filter(
+    (call) =>
+      call.method === "editMessageText" &&
+      String(call.args.text ?? "").includes("skip-a"),
+  );
+  // Old code (no lastSentText) edits the message again with identical text on
+  // finalize → a "message is not modified" 400. New code skips it: zero
+  // editMessageText calls for already-sent text, zero 400s.
+  let daemonLog = "";
+  try {
+    daemonLog = readFileSync(join(stateDir, "daemon.log"), "utf8");
+  } catch {
+    daemonLog = "";
+  }
+  const notModified = daemonLog.split("message is not modified").length - 1;
+
+  c.socket.destroy();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+  return edits.length === 0 && notModified === 0;
+}
+
+// Empty-message suppression: a whitespace-only turn produces zero Telegram
+// messages; a real line that follows whitespace lands in exactly one message.
+async function t_emptyTurnPublishesNothing(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const daemon = spawnDaemonWithMock(stateDir, port);
+  handle.daemon = daemon;
+  await sleep(200);
+
+  mockServer.setApiResult("sendMessage", { message_id: 1 });
+  mockServer.setApiResult("editMessageText", true);
+
+  const c = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = c;
+  c.send({ type: "hello", cwd: projectCwd, sessionId: "empty-test", ompVersion: "18.0.0", pid: process.pid });
+  c.send({ type: "config_update", cwd: projectCwd, remoteOn: true, verbosity: "mid" });
+  await sleep(200);
+
+  // Turn 1: whitespace only → nothing.
+  c.send({ type: "progress", kind: "turn_start", data: "1" });
+  await sleep(50);
+  c.send({ type: "progress", kind: "message", data: "   " });
+  await sleep(200);
+  c.send({ type: "progress", kind: "turn_end", data: "1" });
+  await sleep(200);
+
+  // Turn 2: whitespace then a real line → exactly one message with the real
+  // line.
+  c.send({ type: "progress", kind: "turn_start", data: "2" });
+  await sleep(100);
+  c.send({ type: "progress", kind: "message", data: "  " });
+  await sleep(200);
+  c.send({ type: "progress", kind: "message", data: "empty-turn-real" });
+  await sleep(300);
+
+  const rendered = mockServer.getCalls().filter(
+    (call) => call.method === "sendMessage" || call.method === "editMessageText",
+  );
+  const emptyOnly = rendered.filter((call) => {
+    const t = String(call.args.text ?? "");
+    return t.trim() === "";
+  });
+  const withReal = rendered.filter((call) => String(call.args.text ?? "").includes("empty-turn-real"));
+
+  c.socket.destroy();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+  return emptyOnly.length === 0 && withReal.length === 1;
+}
+
 // --- Main ------------------------------------------------------------------
 
 async function main(): Promise<void> {
@@ -1125,6 +1687,13 @@ async function main(): Promise<void> {
     { name: "status_request", run: (d, h) => t_statusRequest(d, h) },
     { name: "config_update (remoteOn)", run: (d, h) => t_configUpdate(d, h) },
     { name: "409 exit", run: (d, h) => t_409Exit(d, h) },
+    { name: "pair_validate_group (getChat)", run: (d, h) => t_pairValidateGroup(d, h) },
+    { name: "stale sock replaced", run: (d, h) => t_staleSocketReplaced(d, h) },
+    { name: "per-turn message isolation", run: (d, h) => t_turnIsolation(d, h) },
+    { name: "evict stale same-cwd session", run: (d, h) => t_evictStaleSession(d, h) },
+    { name: "no duplicate frames after eviction", run: (d, h) => t_noDuplicateFramesPerCwd(d, h) },
+    { name: "skip unchanged-text edit", run: (d, h) => t_skipUnchangedEdit(d, h) },
+    { name: "empty turn publishes nothing", run: (d, h) => t_emptyTurnPublishesNothing(d, h) },
   ];
 
   const results: { name: string; passed: boolean }[] = [];

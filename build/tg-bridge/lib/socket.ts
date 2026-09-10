@@ -155,16 +155,12 @@ export class SocketManager implements SocketServer {
       return;
     }
     if (frameStr.trim() === "") return;
+    const type = frame.type as string;
     let cwd = typeof frame.cwd === "string" ? (frame.cwd as string) : undefined;
-    if (!cwd) {
-      for (const [c, s] of this.sessions) {
-        if (s.stream === socket) {
-          cwd = c;
-          break;
-        }
-      }
-    }
-    if (!cwd) {
+    if (cwd === undefined) {
+      // Global control frames carry no cwd and must route to onControl even on
+      // streams that already sent hello — a stream→session lookup would resolve
+      // a cwd and drop them into the switch's default arm.
       const CONTROL_TYPES: Record<string, true> = {
         config_set: true,
         config_reload: true,
@@ -172,14 +168,18 @@ export class SocketManager implements SocketServer {
         pair_validate: true,
         pair_validate_group: true,
       };
-      const type = frame.type as string;
       if (CONTROL_TYPES[type]) {
         this.callbacks.onControl?.(type, frame);
+        return;
       }
-      return;
+      for (const [c, s] of this.sessions) {
+        if (s.stream === socket) {
+          cwd = c;
+          break;
+        }
+      }
     }
-
-    const type = frame.type as string;
+    if (!cwd) return;
     switch (type) {
       case "hello": {
         const sessionId = frame.sessionId as string;
@@ -197,6 +197,11 @@ export class SocketManager implements SocketServer {
           lastEventAt: Date.now(),
           stream: socket,
         };
+        const existing = this.sessions.get(cwd);
+        if (existing && existing.stream && existing.stream !== socket) {
+          this.log(`evicting stale session for ${cwd} (old ${existing.sessionId})`);
+          existing.stream.destroy();
+        }
         this.sessions.set(cwd, state);
         this.callbacks.onHello(cwd, state);
         break;

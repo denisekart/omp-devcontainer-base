@@ -46,6 +46,13 @@ declare function setTimeout(
 
 declare function clearTimeout(timeoutId: number): void;
 
+declare function setInterval(
+  callback: (...args: unknown[]) => void,
+  ms?: number,
+): number;
+
+declare function clearInterval(intervalId: number): void;
+
 declare const URL: {
   prototype: URL;
   new (url: string, base?: string | URL): URL;
@@ -86,10 +93,14 @@ declare module "node:fs" {
   export function statSync(path: string): { isDirectory(): boolean };
   export function readdirSync(path: string): string[];
   export function rmdirSync(path: string): void;
+  export interface WriteStream {
+    write(data: string): boolean;
+    end(): void;
+  }
   export function createWriteStream(
     path: string,
     options?: { flags?: string },
-  ): { write(data: string): boolean; end(): void };
+  ): WriteStream;
   export function openSync(path: string, flags: string): number;
   export function closeSync(fd: number): void;
   export function renameSync(oldPath: string, newPath: string): void;

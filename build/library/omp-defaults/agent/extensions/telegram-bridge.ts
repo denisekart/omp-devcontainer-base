@@ -32,7 +32,8 @@ import type {
   SessionStartEvent,
   CustomToolCallEvent,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
-
+import type { Context, AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 // Timer: opaque handle returned by ctx.setTimeout (the API's Timer type is not
 // exported). Stored as number; ctx.clearTimer accepts the handle at runtime.
 type Timer = number;
@@ -43,6 +44,7 @@ type VerbosityLevel = "low" | "mid" | "high" | "xhigh";
 
 interface BridgeConfig {
   enabled: boolean;
+  summaryEvery: number;
   verbosity: VerbosityLevel;
 }
 
@@ -60,7 +62,7 @@ interface ProgressBatch {
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-const DEFAULT_CONFIG: BridgeConfig = { enabled: false, verbosity: "mid" };
+const DEFAULT_CONFIG: BridgeConfig = { enabled: false, verbosity: "mid", summaryEvery: 8 };
 const SOCKET_PATH_ENV = "TG_BRIDGE_SOCK";
 const DEFAULT_SOCK_DIR = path.join(os.homedir(), ".omp", "tg-bridge");
 const DEFAULT_SOCK_PATH = path.join(DEFAULT_SOCK_DIR, "sock");
@@ -71,6 +73,9 @@ const RECONNECT_FACTOR = 1.5;
 const BATCH_FLUSH_MS = 1_500;
 const ASK_TIMEOUT_MS = 600_000; // 10 minutes
 const ASK_TIMEOUT_MS_ENV = "TG_BRIDGE_ASK_TIMEOUT_MS";
+const API_BASE_ENV = "TG_BRIDGE_API_BASE";
+const DEFAULT_API_BASE = "https://api.telegram.org";
+const PAIR_VALIDATE_TIMEOUT_MS = 30_000;
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -84,6 +89,7 @@ const askTimeoutMs = parseInt(
   10
 ) || ASK_TIMEOUT_MS;
 const progressBatch: ProgressBatch = { lines: [], timer: null };
+let currentTurnIndex = 0;
 const pendingAnswers = new Map<string, PendingAnswer>();
 let ctxRef: ExtensionContext | null = null;
 let piRef: ExtensionAPI | null = null;
@@ -96,6 +102,14 @@ let recvBuffer = "";
 let shuttingDown = false;
 let supervisorProcess: child_process.ChildProcess | null = null;
 let daemonSocketPath = "";
+let midFinalText = "";
+let turnsSinceSummary = 0;
+const digest: string[] = [];
+let toolCallsThisTurn = 0;
+let summaryThisTurn = false;
+// True while a free-text prompt ending in "??": the next turn's final answer
+// is delivered to Telegram regardless of verbosity.
+let nextTurnDeliverFinal = false;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -121,6 +135,118 @@ function safeSend(data: unknown): void {
   }
 }
 
+interface TgCallResult {
+  ok: boolean;
+  result?: unknown;
+  description?: string;
+  error_code?: number;
+}
+
+async function tgCall(
+  botToken: string,
+  method: string,
+  args: Record<string, unknown> = {},
+): Promise<TgCallResult> {
+  const apiBase = process.env[API_BASE_ENV] ?? DEFAULT_API_BASE;
+  const url = `${apiBase}/bot${botToken}/${method}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PAIR_VALIDATE_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+      signal: controller.signal,
+    });
+    const data: TgCallResult = (await resp.json()) as TgCallResult;
+    return data;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "network error";
+    return { ok: false, description: msg };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+interface TokenValidation {
+  ok: boolean;
+  username?: string;
+  reason: string;
+}
+
+async function validateToken(botToken: string): Promise<TokenValidation> {
+  const data = await tgCall(botToken, "getMe");
+  if (data.ok && data.result) {
+    const result = data.result as { id?: unknown; username?: string };
+    if (typeof result.id === "number") {
+      return { ok: true, username: result.username, reason: "ok" };
+    }
+    return { ok: false, reason: "unexpected getMe result" };
+  }
+  if (data.error_code === 401) {
+    return { ok: false, reason: "invalid bot token" };
+  }
+  return { ok: false, reason: `cannot reach Telegram API: ${data.description ?? "unknown"}` };
+}
+
+interface GroupValidation {
+  ok: boolean;
+  reason: string;
+}
+
+async function validateGroup(botToken: string, groupId: number): Promise<GroupValidation> {
+  const data = await tgCall(botToken, "getChat", { chat_id: groupId });
+  if (data.ok && data.result) {
+    return { ok: true, reason: "ok" };
+  }
+  if (data.error_code === 400 || data.error_code === 403) {
+    return {
+      ok: false,
+      reason: `bot is not a member of group ${groupId} (${data.description ?? "access denied"})`,
+    };
+  }
+  return { ok: false, reason: `cannot reach Telegram API: ${data.description ?? "unknown"}` };
+}
+
+function parseGroupId(input: string): number | null {
+  const trimmed = input.trim();
+  if (!/^-?\d{6,}$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n)) return null;
+  return n > 0 ? -n : n;
+}
+
+
+function writeBridgeConfig(botToken: string, groupId: number): boolean {
+  const configPath = getConfigPath();
+  try {
+    let existing: Record<string, unknown> = {};
+    try {
+      existing = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    } catch {
+      /* no config yet */
+    }
+    const merged: Record<string, unknown> = {
+      ...existing,
+      botToken,
+      groupId,
+      allowedUserIds:
+        Array.isArray(existing.allowedUserIds) && existing.allowedUserIds.length > 0
+          ? existing.allowedUserIds
+          : [],
+      editIntervalMs:
+        typeof existing.editIntervalMs === "number" ? existing.editIntervalMs : 1500,
+      apiBase: existing.apiBase ?? DEFAULT_API_BASE,
+      enabled: true,
+      verbosity: config.verbosity,
+    };
+    fs.writeFileSync(configPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function flushProgressBatch(): void {
   if (progressBatch.lines.length > 0) {
     const lines = progressBatch.lines;
@@ -130,6 +256,7 @@ function flushProgressBatch(): void {
         type: "progress",
         kind: "message",
         data: lines.join("\n"),
+        turnIndex: currentTurnIndex,
       });
     }
     progressBatch.timer = null;
@@ -152,61 +279,73 @@ function enqueueProgress(kind: string, data: unknown): void {
 function immediateFlush(): void {
   flushProgressBatch();
 }
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Convert markdown-ish progress text into Telegram HTML. Escape &/</> first,
+ * then: ``` fences → <pre><code>, inline `code`, **bold** → <b>. If the result
+ * would exceed Telegram's ~200-tag/message limit, fall back to escaped plain text.
+ */
+function toTelegramHtml(text: string): string {
+  const esc = escapeHtml(text);
+  let out = esc.replace(/```([\s\S]*?)```/g, (_, code) => `<pre><code>${code}</code></pre>`);
+  out = out.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  out = out.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  const tagCount = out.split("<").length - 1;
+  if (tagCount > 150) return esc;
+  return out;
+}
 
 function renderProgressLine(kind: string, data: unknown): string | null {
   if (!config.enabled || !connected) return null;
 
   const v = config.verbosity;
 
-  // Always emit for enabled+connected
   switch (kind) {
     case "turn_start": {
-      const ev = data as TurnStartEvent;
-      if (v === "low" || v === "mid" || v === "high" || v === "xhigh") {
-        return `[turn ${ev.turnIndex}] start`;
-      }
+      // All verbosity levels: drop framing emoji
       return null;
     }
     case "turn_end": {
-      const ev = data as TurnEndEvent;
-      if (v === "low" || v === "mid" || v === "high" || v === "xhigh") {
-        return `[turn ${ev.turnIndex}] end`;
-      }
+      // All verbosity levels: drop framing emoji
       return null;
     }
     case "tool": {
       const ev = data as ToolExecutionStartEvent;
-      if (v === "low") return null;
-      // mid+: tool one-liner
-      return renderToolOneLiner(ev);
+      if (v === "low" || v === "mid") return null;
+      // high+: tool one-liner
+      return `🔧 ${escapeHtml(renderToolOneLiner(ev))}`;
     }
     case "message": {
       const ev = data as MessageEndEvent;
-      if (v === "low") return null;
+      if (v === "low" || v === "mid") return null;
+      // high+: every message
       return renderMessageEnd(ev);
     }
     case "todo": {
       const ev = data as TodoReminderEvent;
       if (v === "low" || v === "mid") return null;
-      return renderTodo(ev);
+      return renderTodo(ev) === null ? null : escapeHtml(renderTodo(ev)!);
     }
     case "error": {
       const ev = data as ToolExecutionEndEvent;
       if (v === "low") {
-        return ev.isError ? `${ev.toolName} ERROR` : null;
+        return ev.isError ? `⚠️ ${escapeHtml(ev.toolName)} error` : null;
       }
-      return ev.isError ? `${ev.toolName} ERROR` : null;
+      return ev.isError ? `⚠️ ${escapeHtml(ev.toolName)} error` : null;
     }
     case "agent_start": {
       if (v === "xhigh") {
-        const ev = data as AgentStartEvent;
+        const _ev = data as AgentStartEvent;
         return `[agent] start`;
       }
       return null;
     }
     case "agent_end": {
       if (v === "xhigh") {
-        const ev = data as AgentEndEvent;
+        const _ev = data as AgentEndEvent;
         return `[agent] end`;
       }
       return null;
@@ -269,9 +408,8 @@ function renderMessageEnd(ev: MessageEndEvent): string | null {
   const text = textParts.join("\n");
   if (!text) return null;
 
-  // Truncate to 4096 chars max per Telegram limit
-  const truncated = text.length > 4096 ? text.slice(0, 4093) + "…" : text;
-  return truncated;
+  // HTML-format; the daemon chunks long output via splitHtmlAware
+  return toTelegramHtml(text);
 }
 
 function renderTodo(ev: TodoReminderEvent): string | null {
@@ -401,8 +539,10 @@ function handleFrame(frame: Record<string, unknown>): void {
     case "config": {
       const enabled = frame.enabled as boolean | undefined;
       const verbosity = frame.verbosity as VerbosityLevel | undefined;
+      const summaryEveryVal = frame.summaryEvery as number | undefined;
       if (enabled !== undefined) config.enabled = enabled;
       if (verbosity !== undefined) config.verbosity = verbosity;
+      if (summaryEveryVal !== undefined && summaryEveryVal > 0) config.summaryEvery = summaryEveryVal;
       break;
     }
     case "pair_done": {
@@ -424,6 +564,18 @@ function handleFrame(frame: Record<string, unknown>): void {
         } else {
           piRef?.sendUserMessage?.(text, { deliverAs });
         }
+      }
+      if (text && text.trimEnd().endsWith("??")) {
+        nextTurnDeliverFinal = true;
+      }
+      break;
+    }
+    case "btw": {
+      // Side question from Telegram: answer via one-shot AI call, never steer
+      // the running turn.
+      const q = frame.question as string | undefined;
+      if (q) {
+        void answerBtw(q);
       }
       break;
     }
@@ -454,8 +606,11 @@ function handleFrame(frame: Record<string, unknown>): void {
 function ensureDaemon(): void {
   const sockPath = getSocketPath();
 
-  // If socket already exists, daemon is running
-  if (fs.existsSync(sockPath)) return;
+  // A live socket connection means the daemon is reachable; skip the guard
+  // instead of trusting the sock file (a stale file from a crashed daemon
+  // would otherwise block every socket path). The tmux has-session guard and
+  // the daemon's own stale-sock unlink are the real idempotency mechanisms.
+  if (connected) return;
 
   // Ensure directory exists
   try {
@@ -535,119 +690,81 @@ async function runPairWizard(): Promise<void> {
 
   const botToken = token.trim();
 
-  // Step 2: Validate token with getMe (send to daemon for direct fetch)
+  // Step 2: Validate the token locally (no daemon required — this is the
+  // fresh-install case where no daemon exists yet, so the old socket round-trip
+  // always timed out).
   notify?.("Validating bot token…", "info");
-  safeSend({ type: "pair_validate" as const, token: botToken });
-
-  // Wait for pair_done or timeout (30s)
-  const validatePromise = new Promise<boolean>((resolve) => {
-    // Intercept pair_done via a one-shot socket handler until it arrives or times out.
-    if (socket && socket.readyState === "open") {
-      const handler = (data: Buffer) => {
-        lastEventAt = Date.now();
-        const raw = data.toString("utf-8");
-        const lines = raw.split("\n");
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            const frame = JSON.parse(trimmed);
-            if (frame.type === "pair_done") {
-              const success = frame.success as boolean | undefined;
-              if (success) {
-                resolve(true);
-                return;
-              }
-            }
-          } catch {
-            /* skip */
-          }
-        }
-      };
-      socket.on("data", handler);
-      setTimeout(() => {
-        socket?.removeListener("data", handler);
-        resolve(false);
-      }, 30_000);
-    } else {
-      resolve(false);
-    }
-  });
-
-  const validated = await validatePromise;
-  if (!validated) {
-    notify?.("Bot token validation failed or timed out. Pairing cancelled.", "error");
+  const tokenCheck = await validateToken(botToken);
+  if (!tokenCheck.ok) {
+    notify?.(`Bot token validation failed: ${tokenCheck.reason}. Pairing cancelled.`, "error");
     return;
   }
+  const botName = tokenCheck.username ? ` (@${tokenCheck.username})` : "";
+  notify?.(`Bot token valid${botName}.`, "info");
 
-  // Step 3: Explain group setup
+  // Step 3: Group ID is required (there is no auto-detect: getUpdates stays
+  // empty while no group is known, and the daemon hard-requires a negative
+  // groupId for every outbound path).
   notify?.(
-    "Step 3: Add your bot to a Telegram group (supergroup/forum).\n\n" +
-    "The daemon will auto-detect the group, or you can provide the group ID manually.\n\n" +
-    "Reply with a group ID (e.g. -1001234567890) or press Enter to auto-detect.",
+    "Step 3: Add the bot to a Telegram group (a forum/supergroup), then reply with the group's ID.\n\n" +
+    "The ID is the group's chat.id — a long negative number, e.g. -1001234567890.\n" +
+    "Add a group-info bot (e.g. @getidsbot) to the group and ask for the chat ID.",
     "info"
   );
 
-  const groupIdInput = await ui?.input?.("Group ID (optional)", "-1001234567890");
-  const groupId = groupIdInput?.trim();
-
-  if (groupId) {
-    // Step 4: Validate group with daemon
-    notify?.("Validating group…", "info");
-    safeSend({ type: "pair_validate_group" as const, groupId });
-
-    const groupValidated = await new Promise<boolean>((resolve) => {
-      const savedHandler = (data: Buffer) => {
-        lastEventAt = Date.now();
-        const raw = data.toString("utf-8");
-        const lines = raw.split("\n");
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            const frame = JSON.parse(trimmed);
-            if (frame.type === "pair_done") {
-              const success = frame.success as boolean | undefined;
-              if (success) resolve(true);
-            }
-          } catch {
-            /* skip */
-          }
-        }
-      };
-      socket?.on("data", savedHandler);
-      setTimeout(() => {
-        socket?.removeListener("data", savedHandler);
-        resolve(false);
-      }, 30_000);
-    });
-
-    if (!groupValidated) {
-      notify?.("Group validation failed or timed out. Pairing cancelled.", "error");
-      return;
+  let groupId: number | null = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const groupIdInput = await ui?.input?.(
+      "Group ID",
+      "-1001234567890",
+    );
+    if (!groupIdInput || !groupIdInput.trim()) break;
+    const parsed = parseGroupId(groupIdInput.trim());
+    if (parsed === null) {
+      notify?.(
+        `Invalid group ID "${groupIdInput.trim()}". Expected a (negative) number with 6+ digits, e.g. -1001234567890.`,
+        "warning"
+      );
+      continue;
     }
+    groupId = parsed;
+
+    // Step 4: Validate group membership via getChat (local — no daemon).
+    notify?.(`Validating group ${groupId}…`, "info");
+    const groupCheck = await validateGroup(botToken, groupId);
+    if (!groupCheck.ok) {
+      notify?.(`Group validation failed: ${groupCheck.reason}`, "error");
+      break;
+    }
+    break;
   }
 
-  // Step 5: Write config.json
-  const configPath = getConfigPath();
-  try {
-    let existing: Record<string, unknown> = {};
-    try {
-      existing = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-    } catch {
-      /* no config yet */
-    }
-    const configData = JSON.stringify({ ...existing, enabled: true, verbosity: config.verbosity }, null, 2);
-    fs.writeFileSync(configPath, configData, { mode: 0o600 });
-  } catch {
+  if (groupId === null) {
+    notify?.("No valid group ID provided. Pairing cancelled.", "warning");
+    return;
+  }
+
+  // Step 5: Write the full config.json. This is what unblocks a supervisor
+  // sitting in wait_for_config (it polls for botToken + negative groupId),
+  // and what the daemon reads on start/reload.
+  if (!writeBridgeConfig(botToken, groupId)) {
     notify?.("Failed to write config. Pairing incomplete.", "error");
     return;
   }
 
-  // Step 6: Send config_reload to daemon
+  // Step 6: Enable and connect. A waiting supervisor picks up the config
+  // within ~5 s and starts the daemon; if one is already running, the
+  // config_reload below hot-swaps it.
+  config.enabled = true;
+  ensureDaemon();
+  connectSocket();
   safeSend({ type: "config_reload" as const });
 
-  notify?.("✅ Pairing complete! Your session is now connected to Telegram.", "info");
+  notify?.(
+    `✅ Pairing complete! Bot${botName} is paired to group ${groupId}.\n\n` +
+    "Next: in the group, send the bot /pair (DM) and /bind <workspace-path> in a topic, then /remote on to start the bridge.",
+    "info"
+  );
 }
 
 // ── /remote command ────────────────────────────────────────────────────────
@@ -735,33 +852,40 @@ async function handleRemoteCommand(args: string, ctx: ExtensionCommandContext): 
     // ── /remote pair <token> <groupId> ──
     const pairMatch = trimmed.match(/^pair\s+(\S+)\s+(\S+)/i);
     if (pairMatch) {
-      const token = pairMatch[1];
-      const groupId = pairMatch[2];
-      config.enabled = true;
-      ensureDaemon();
-      connectSocket();
-
-      // Write config
-      const configPath = getConfigPath();
-      try {
-        let existing: Record<string, unknown> = {};
-        try {
-          existing = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-        } catch {
-          /* no config yet */
-        }
-        const configData = JSON.stringify({ ...existing, enabled: true, verbosity: config.verbosity }, null, 2);
-        fs.writeFileSync(configPath, configData, { mode: 0o600 });
-      } catch {
+      const botToken = pairMatch[1].trim();
+      const rawGroupId = pairMatch[2].trim();
+      const groupId = parseGroupId(rawGroupId);
+      if (groupId === null) {
+        notify(
+          `Invalid group ID "${rawGroupId}". Expected a (negative) number with 6+ digits, e.g. -1001234567890.`,
+          "warning"
+        );
+        return;
+      }
+      notify(`Validating bot token ${botToken.slice(0, 6)}…`, "info");
+      const tokenCheck = await validateToken(botToken);
+      if (!tokenCheck.ok) {
+        notify(`Bot token validation failed: ${tokenCheck.reason}.`, "error");
+        return;
+      }
+      notify(`Validating group ${groupId}…`, "info");
+      const groupCheck = await validateGroup(botToken, groupId);
+      if (!groupCheck.ok) {
+        notify(`Group validation failed: ${groupCheck.reason}.`, "error");
+        return;
+      }
+      if (!writeBridgeConfig(botToken, groupId)) {
         notify("Failed to write config.", "error");
         return;
       }
-
-      // Send pair command to daemon
-      safeSend({ type: "pair" as const, token, groupId });
+      config.enabled = true;
+      ensureDaemon();
+      connectSocket();
       safeSend({ type: "config_reload" as const });
-
-      notify(`Pairing with token ${token.slice(0, 6)}… and group ${groupId}`, "info");
+      notify(
+        `✅ Paired with token ${botToken.slice(0, 6)}… and group ${groupId}. Bridge enabled.`,
+        "info"
+      );
       return;
     }
 
@@ -793,6 +917,58 @@ async function handleRemoteCommand(args: string, ctx: ExtensionCommandContext): 
   }
 }
 
+interface RemoteSubcommand {
+  name: string;
+  label: string;
+  description: string;
+  hint?: string;
+}
+
+const REMOTE_SUBCOMMANDS: RemoteSubcommand[] = [
+  { name: "status", label: "status", description: "Show bridge status" },
+  { name: "on", label: "on", description: "Connect this session to Telegram" },
+  { name: "off", label: "off", description: "Disconnect this session from Telegram" },
+  {
+    name: "verbosity",
+    label: "verbosity",
+    description: "Set verbosity level",
+    hint: "low|mid|high|xhigh",
+  },
+  {
+    name: "pair",
+    label: "pair",
+    description: "Pair a bot token + group",
+    hint: "<token> <groupId>",
+  },
+  { name: "help", label: "help", description: "Show usage" },
+];
+
+const REMOTE_VERBOSITY_LEVELS: string[] = ["low", "mid", "high", "xhigh"];
+
+/** TUI completions for /remote <subcommand> [arg]. */
+function getRemoteCompletions(argumentPrefix: string): AutocompleteItem[] | null {
+  const lower = argumentPrefix.toLowerCase();
+  const sp = lower.indexOf(" ");
+  if (sp !== -1) {
+    // Complete only the second argument for known multi-arg subcommands.
+    if (lower.slice(0, sp) === "verbosity") {
+      const rest = argumentPrefix.slice(sp + 1);
+      return REMOTE_VERBOSITY_LEVELS.filter((l) => l.startsWith(rest)).map((l) => ({
+        value: `${l} `,
+        label: l,
+        description: `Set verbosity to ${l}`,
+      }));
+    }
+    return null;
+  }
+  return REMOTE_SUBCOMMANDS.filter((s) => s.name.startsWith(lower)).map((s) => ({
+    value: `${s.name} `,
+    label: s.label,
+    description: s.description,
+    hint: s.hint,
+  }));
+}
+
 function registerRemoteCommand(pi: ExtensionAPI): void {
   try {
     pi.registerCommand("remote", {
@@ -800,9 +976,89 @@ function registerRemoteCommand(pi: ExtensionAPI): void {
       handler: async (args: string, ctx: ExtensionCommandContext) => {
         await handleRemoteCommand(args, ctx);
       },
+      getArgumentCompletions: getRemoteCompletions,
     });
   } catch {
     // registerCommand may not exist in -p mode; no-op
+  }
+}
+// ── Summary ──────────────────────────────────────────────────────────────────
+
+async function maybeSendSummary(): Promise<void> {
+  try {
+    const digestText = digest.join(" | ") || "(no events this window)";
+    const pi = await import("@oh-my-pi/pi-ai");
+    const model = ctxRef?.model;
+    if (model) {
+      const apiKey = await ctxRef!.modelRegistry.getApiKey(model);
+      const ctx: Context = {
+        systemPrompt: [
+          "Summarize this coding session's progress in 2-4 short lines: what is done, what is in flight, any blockers. Be concise, no preamble.",
+        ],
+        messages: [{ role: "user" as const, content: [{ type: "text" as const, text: digestText }], timestamp: Date.now() }],
+      };
+      const resp: AssistantMessage = await pi.completeSimple(model, ctx, { apiKey });
+      const text = (resp.content ?? [])
+        .filter((c): c is { type: "text"; text: string } => c.type === "text")
+        .map((c) => c.text)
+        .join("\n")
+        .trim();
+      if (text) {
+        safeSend({ type: "progress", kind: "summary", data: { text: toTelegramHtml(text), source: "ai" as const } });
+        summaryThisTurn = true;
+        turnsSinceSummary = 0;
+        log(`[btw] ai`);
+        return;
+      }
+    }
+  } catch {
+    // Any failure degrades to digest path
+  }
+  // Fallback: deterministic digest
+  const fb = "In flight: " + digest.slice(-3).join(", ") + (toolCallsThisTurn ? " · " + toolCallsThisTurn + " tools" : "");
+  safeSend({ type: "progress", kind: "summary", data: { text: escapeHtml(fb), source: "digest" as const } });
+  summaryThisTurn = true;
+  turnsSinceSummary = 0;
+  log(`[btw] digest`);
+}
+
+/**
+ * Side-question handler: one-shot AI call (like the summary path) whose
+ * answer is posted to the topic immediately as a `btw` progress frame.
+ * Never touches the running turn.
+ */
+async function answerBtw(question: string): Promise<void> {
+  try {
+    // Lazy: pi-ai resolves only against the runtime model registry, never at
+    // extension-load time (same pattern as maybeSendSummary).
+    const pi = await import("@oh-my-pi/pi-ai");
+    const model = ctxRef?.model;
+    if (!model) {
+      safeSend({ type: "progress", kind: "btw", data: { text: escapeHtml("(no active model — cannot answer)") } });
+      return;
+    }
+    const apiKey = await ctxRef?.modelRegistry.getApiKey(model);
+    const ctx: Context = {
+      systemPrompt: [
+        "You are answering a quick side question about the coding session you are running. Answer directly in 1-4 short lines, no preamble.",
+      ],
+      messages: [{ role: "user" as const, content: [{ type: "text" as const, text: question }], timestamp: Date.now() }],
+    };
+    const resp: AssistantMessage = await pi.completeSimple(model, ctx, { apiKey });
+    const text = (resp.content ?? [])
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text)
+      .join("\n")
+      .trim();
+    if (text) {
+      safeSend({ type: "progress", kind: "btw", data: { text: toTelegramHtml(text) } });
+      log("[btw] answer");
+      return;
+    }
+    safeSend({ type: "progress", kind: "btw", data: { text: escapeHtml("(empty answer)") } });
+  } catch (e) {
+    log(`[btw] failed: ${(e as Error).message}`);
+    safeSend({ type: "progress", kind: "btw", data: { text: escapeHtml("(side-question call failed)") } });
   }
 }
 
@@ -826,45 +1082,107 @@ function handleSessionStart(_ev: SessionStartEvent, ctx: ExtensionContext): void
     connectSocket();
   }
 }
-
-function handleTurnStart(ev: TurnStartEvent, ctx: ExtensionContext): void {
+function handleTurnStart(ev: TurnStartEvent, _ctx: ExtensionContext): void {
+  currentTurnIndex = ev.turnIndex;
+  midFinalText = "";
+  digest.length = 0;
+  toolCallsThisTurn = 0;
+  summaryThisTurn = false;
+  nextTurnDeliverFinal = false;
+  if (config.enabled && connected) {
+    safeSend({ type: "progress", kind: "turn_start", data: String(ev.turnIndex) });
+  }
   enqueueProgress("turn_start", ev);
 }
 
-function handleTurnEnd(ev: TurnEndEvent, ctx: ExtensionContext): void {
-  enqueueProgress("turn_end", ev);
+function handleTurnEnd(ev: TurnEndEvent, _ctx: ExtensionContext): void {
+  // Flush message lines first so they precede the turn_end frame on the wire.
   immediateFlush();
+  if (config.enabled && connected) {
+    safeSend({ type: "progress", kind: "turn_end", data: String(ev.turnIndex) });
+  }
+  enqueueProgress("turn_end", ev);
+  // Mid: deliver final answer as standalone message frame
+  if ((config.verbosity === "mid" || nextTurnDeliverFinal) && midFinalText.trim() && connected) {
+    safeSend({ type: "progress", kind: "message", data: midFinalText, turnIndex: currentTurnIndex });
+  }
+  turnsSinceSummary++;
+  const should = (turnsSinceSummary % (config.summaryEvery || 8) === 0) || (toolCallsThisTurn >= 6 && !summaryThisTurn);
+  if (config.enabled && connected && should && ctxRef) {
+    void maybeSendSummary();
+  }
 }
 
 function handleToolExecutionStart(
   ev: ToolExecutionStartEvent,
-  ctx: ExtensionContext
+  _ctx: ExtensionContext
 ): void {
+  toolCallsThisTurn++;
+  digest.push(ev.toolName);
   enqueueProgress("tool", ev);
 }
 
 function handleToolExecutionEnd(
   ev: ToolExecutionEndEvent,
-  ctx: ExtensionContext
+  _ctx: ExtensionContext
 ): void {
   if (ev.isError) {
-    enqueueProgress("error", ev);
+    // Build first-line context for error frame
+    let rawResult: string;
+    if (typeof ev.result === "string") {
+      rawResult = ev.result;
+    } else {
+      rawResult = JSON.stringify(ev.result);
+    }
+    const firstLine = rawResult.split("\n")[0] ?? "";
+    const maxLen = 200;
+    let firstLineTrunc: string;
+    if (firstLine.length > maxLen) {
+      firstLineTrunc = firstLine.slice(0, maxLen) + "…";
+    } else {
+      firstLineTrunc = firstLine;
+    }
+    // Send dedicated error frame at all levels
+    if (connected) {
+      safeSend({ type: "progress", kind: "error", data: { toolName: ev.toolName, text: firstLineTrunc } });
+    }
+    // Add error marker to digest (the dedicated error frame above is the
+    // user-visible delivery at all levels).
+    digest.push(`❌ ${ev.toolName}`);
   }
 }
 
-function handleMessageEnd(ev: MessageEndEvent, ctx: ExtensionContext): void {
-  enqueueProgress("message", ev);
+function handleMessageEnd(ev: MessageEndEvent, _ctx: ExtensionContext): void {
+  if ((config.verbosity === "mid" || nextTurnDeliverFinal) && ev.message.role === "assistant") {
+    midFinalText = renderMessageEnd(ev) ?? "";
+  }
+  if (config.verbosity !== "mid") {
+    enqueueProgress("message", ev);
+  }
+  // Add assistant text excerpt to digest
+  if (ev.message.role === "assistant" && ev.message.content) {
+    for (const c of ev.message.content) {
+      if (c.type === "text" && c.text) {
+        digest.push(c.text.slice(0, 120));
+        break;
+      }
+    }
+  }
 }
 
-function handleTodoReminder(ev: TodoReminderEvent, ctx: ExtensionContext): void {
+function handleTodoReminder(ev: TodoReminderEvent, _ctx: ExtensionContext): void {
   enqueueProgress("todo", ev);
+  // Send todo_state frame for /status
+  if (connected) {
+    safeSend({ type: "progress", kind: "todo_state", data: { todos: (ev.todos ?? []).map((t) => ({ content: t.content ?? "", status: t.status ?? "" })) } });
+  }
 }
 
-function handleAgentStart(ev: AgentStartEvent, ctx: ExtensionContext): void {
+function handleAgentStart(ev: AgentStartEvent, _ctx: ExtensionContext): void {
   enqueueProgress("agent_start", ev);
 }
 
-function handleAgentEnd(ev: AgentEndEvent, ctx: ExtensionContext): void {
+function handleAgentEnd(ev: AgentEndEvent, _ctx: ExtensionContext): void {
   enqueueProgress("agent_end", ev);
 }
 
@@ -931,7 +1249,7 @@ async function handleAskInterception(
       type: "question" as const,
       id: qId,
       kind,
-      title,
+      title: escapeHtml(title),
       options,
       default: defaultOpt,
     };
