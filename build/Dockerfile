@@ -116,7 +116,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 
 # Update npm and install global npm tools
 RUN npm install -g npm@latest \
-    && npm install -g typescript pnpm typescript-language-server svelte-language-server vscode-langservers-extracted bash-language-server \
+    && npm install -g typescript pnpm typescript-language-server svelte-language-server vscode-langservers-extracted bash-language-server devicetree-language-server \
     && npm cache clean --force
 
 # Install bun runtime
@@ -182,6 +182,56 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install -g shadcn @modelcontextprotocol/server-puppeteer \
     && ln -sf /usr/bin/chromium /usr/local/puppeteer-chromium \
     && npm cache clean --force
+
+# Install Zephyr/ZMK embedded development tooling (clangd, dtc, flashing, build deps)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clangd cmake ninja-build device-tree-compiler dfu-util ccache libusb-1.0-0 libusb-1.0-0-dev python3-serial python3-dev file gdb-multiarch openocd libxml2-utils gperf xsltproc help2man libelf-dev libxml2-dev liblzma-dev libffi-dev libselinux1-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+         apt-get update && apt-get install -y --no-install-recommends gcc-multilib && rm -rf /var/lib/apt/lists/*; \
+       fi
+
+# Install the Zephyr SDK (LLVM distribution bundle, v1.0.1) under /opt/zephyr.
+# The bundle's top-level `llvm/` dir is renamed to `zephyr-llvm` so the toolchain
+# lives at the documented path (/opt/zephyr/zephyr-llvm). The hosttools installer
+# lays out /opt/zephyr/hosttools/sysroots/<arch>-pokysdk-linux/usr (needed by
+# Zephyr's FindHostTools.cmake). `file` must be installed first (relocation step).
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+         arm64) zarch="aarch64" ;; \
+         amd64) zarch="x86_64" ;; \
+         *) echo "unsupported arch: $arch" && exit 1 ;; \
+       esac \
+    && wget -qO /tmp/zephyr-sdk.tar.xz "https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v1.0.1/zephyr-sdk-1.0.1_linux-${zarch}_llvm.tar.xz" \
+    && mkdir -p /opt/zephyr \
+    && tar -xJf /tmp/zephyr-sdk.tar.xz -C /opt/zephyr --strip-components=1 \
+    && rm -f /tmp/zephyr-sdk.tar.xz \
+    && if [ -d /opt/zephyr/llvm ]; then mv /opt/zephyr/llvm /opt/zephyr/zephyr-llvm; fi \
+    && sh /opt/zephyr/hosttools/zephyr-sdk-${zarch}-hosttools-standalone-0.10.sh -y -d /opt/zephyr/hosttools \
+    && chown -R vscode:vscode /opt/zephyr \
+    && test -x /opt/zephyr/zephyr-llvm/bin/clang \
+    && test -d "/opt/zephyr/hosttools/sysroots/${zarch}-pokysdk-linux/usr/bin"
+
+# Environment for Zephyr builds. ZEPHYR_TOOLCHAIN_VARIANT=llvm makes Zephyr's CMake
+# load the LLVM toolchain; CLANG_ROOT_DIR is the variable zephyr/toolchain/llvm
+# actually reads (LLVM_TOOLCHAIN_PATH hint); ZEPHYR_SDK_INSTALL_DIR is the
+# find_package(HINTS) path used to discover Zephyr-sdk.cmake deterministically;
+# ZEPHYR_CLANG_SYSROOT is kept for Zephyr versions that still read it.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      arm64) zarch="aarch64" ;; \
+      amd64) zarch="x86_64" ;; \
+      *) echo "unsupported arch: $arch" && exit 1 ;; \
+    esac; \
+    printf '%s\n' \
+      'export ZEPHYR_TOOLCHAIN_VARIANT=llvm' \
+      'export ZEPHYR_CLANG_SYSROOT=/opt/zephyr/zephyr-llvm/sysroots' \
+      'export CLANG_ROOT_DIR=/opt/zephyr/zephyr-llvm' \
+      'export ZEPHYR_SDK_INSTALL_DIR=/opt/zephyr' \
+      "export PATH=/opt/zephyr/hosttools/sysroots/${zarch}-pokysdk-linux/usr/bin:/opt/zephyr/zephyr-llvm/bin:\$PATH" \
+      > /etc/profile.d/zephyr.sh; \
+    chmod 0644 /etc/profile.d/zephyr.sh
 
 # Install shell formatter
 RUN arch="$(dpkg --print-architecture)" && \
@@ -284,6 +334,13 @@ RUN uv tool install mcp-server-docker
 RUN uv tool install mcp-server-fetch
 RUN uv tool install mcp-server-git
 RUN uv tool install mcp-server-time
+# west runs Zephyr's python build scripts from its own venv; install the
+# Zephyr build requirements (pyelftools, PyYAML, ...) into that venv so
+# `west build` works out of the box. Pinned to the ZMK-pinned Zephyr release.
+RUN uv tool install west --with-requirements \
+    'https://raw.githubusercontent.com/zmkfirmware/zephyr/v4.1.0%2Bzmk-fixes/scripts/requirements-base.txt' \
+    && uv tool install zmk \
+    && uv tool install pyocd
 RUN python3 -m venv ~/.local/share/hindsight \
     && ~/.local/share/hindsight/bin/pip install 'setuptools<58' wheel \
     && ~/.local/share/hindsight/bin/pip install hindsight-all hindsight-api \
@@ -322,6 +379,18 @@ RUN mkdir -p ~/.zsh_history_vol \
     && printf '%s\n' 'export OPENAI_API_KEY=anything' >> ~/.zshrc \
     && printf '%s\n' 'export LITELLM_API_KEY=anything' >> ~/.zshrc \
     && printf '%s\n' 'export PATH=$BUN_INSTALL/bin:$DOTNET_ROOT:/home/vscode/.dotnet/tools:/home/vscode/.local/bin:/usr/local/bin:$PATH' >> ~/.zshrc \
+    && printf '%s\n' '' >> ~/.zshrc \
+    && printf '%s\n' '# Zephyr SDK (LLVM) — mirrors /etc/profile.d/zephyr.sh (zsh is not a login shell)' >> ~/.zshrc \
+    && printf '%s\n' 'export ZEPHYR_TOOLCHAIN_VARIANT=llvm' >> ~/.zshrc \
+    && printf '%s\n' 'export ZEPHYR_CLANG_SYSROOT=/opt/zephyr/zephyr-llvm/sysroots' >> ~/.zshrc \
+    && printf '%s\n' 'export CLANG_ROOT_DIR=/opt/zephyr/zephyr-llvm' >> ~/.zshrc \
+    && printf '%s\n' 'export ZEPHYR_SDK_INSTALL_DIR=/opt/zephyr' >> ~/.zshrc \
+    && case "$(dpkg --print-architecture)" in \
+      arm64) zarch="aarch64" ;; \
+      amd64) zarch="x86_64" ;; \
+      *) echo "unsupported arch" && exit 1 ;; \
+    esac \
+    && printf '%s\n' "export PATH=/opt/zephyr/hosttools/sysroots/${zarch}-pokysdk-linux/usr/bin:/opt/zephyr/zephyr-llvm/bin:\$PATH" >> ~/.zshrc \
     && printf '%s\n' '' >> ~/.zshrc \
     && printf '%s\n' '# pi-knowledge (local-first RAG): deterministic floor exports. The persistent,' >> ~/.zshrc \
     && printf '%s\n' '# user-editable override lives in ~/.omp/knowledge.env (seeded on first boot),' >> ~/.zshrc \

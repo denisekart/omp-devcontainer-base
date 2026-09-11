@@ -24,6 +24,16 @@ lsp:
     bash:
       command: "bash-language-server"
       args: ["start"]
+    c:
+      command: "clangd"
+      args: ["--background-index", "--header-insertion=iwyu"]
+      fileTypes: [".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hxx", ".cu", ".cuh", ".m", ".mm"]
+      rootMarkers: ["compile_commands.json", "CMakeLists.txt", ".clangd", ".clang-format", "Makefile", "west.yml", "Kconfig"]
+    dts:
+      command: "devicetree-language-server"
+      args: ["--stdio"]
+      fileTypes: [".dts", ".dtsi", ".overlay"]
+      rootMarkers: [".git", "CMakeLists.txt", "west.yml", "Kconfig"]
 
 # Memory backend — Hindsight (in-container embedded Postgres, fully local)
 # Fallback: change to 'mnemopi' for lightweight SQLite mode

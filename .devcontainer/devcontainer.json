@@ -62,14 +62,23 @@
         "mikestead.dotenv",
         "EditorConfig.EditorConfig",
         "eamodio.gitlens",
-        "tamasfe.even-better-toml"
+        "tamasfe.even-better-toml",
+        "ms-vscode.cpptools",
+        "ms-vscode.cpptools-extension-pack"
       ],
       "settings": {
         "editor.formatOnSave": true,
         "terminal.integrated.defaultProfile.linux": "zsh",
         "terminal.integrated.gpuAcceleration": "off",
         "files.insertFinalNewline": true,
-        "files.trimTrailingWhitespace": true
+        "files.trimTrailingWhitespace": true,
+        "files.associations": {
+          "*.overlay": "dts",
+          "*.keymap": "dts",
+          "*.dts": "dts",
+          "*.dtsi": "dts"
+        },
+        "C_Cpp.default.compilerPath": "/opt/zephyr/zephyr-llvm/bin/clang"
       }
     }
   },

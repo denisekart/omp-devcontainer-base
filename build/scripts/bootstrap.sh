@@ -18,7 +18,7 @@ STACK=""
 usage() {
   echo "Usage: bootstrap.sh [--stack <preset>]"
   echo ""
-  echo "Presets: dotnet-aspire-svelte | dotnet-only | svelte-only | generic"
+  echo "Presets: dotnet-aspire-svelte | dotnet-only | svelte-only | zephyr-only | generic"
   echo "  --stack <preset>  Force a stack preset instead of auto-detecting"
   echo "  -h, --help        Show this help"
 }
@@ -83,6 +83,11 @@ has_svelte() {
     | xargs -0 -r grep -l '"svelte"' 2>/dev/null | grep -q .
 }
 
+# ZMK workspaces have west.yml under app/; bare Zephyr workspaces have it at root.
+has_zephyr() {
+  find_pruned -name 'west.yml' -print -quit | grep -q .
+}
+
 if [[ "$STACK_SET" -eq 1 ]]; then
   echo "bootstrap.sh: using stack: $STACK"
 else
@@ -96,6 +101,8 @@ else
     else
       STACK="dotnet-only"
     fi
+  elif has_zephyr; then
+    STACK="zephyr-only"
   elif has_svelte; then
     STACK="svelte-only"
   else
@@ -107,11 +114,12 @@ fi
 # --- Map stack to profiles ---
 PROFILES=()
 case "$STACK" in
-  dotnet-aspire-svelte|generic) PROFILES=("dotnet-aspire" "svelte") ;;
+  dotnet-aspire-svelte|generic) PROFILES=("dotnet-aspire" "svelte" "zephyr") ;;
   dotnet-only)                  PROFILES=("dotnet-aspire") ;;
   svelte-only)                  PROFILES=("svelte") ;;
+  zephyr-only)                  PROFILES=("zephyr") ;;
   *)
-    echo "bootstrap.sh: unknown stack: $STACK (expected: dotnet-aspire-svelte | dotnet-only | svelte-only | generic)" >&2
+    echo "bootstrap.sh: unknown stack: $STACK (expected: dotnet-aspire-svelte | dotnet-only | svelte-only | zephyr-only | generic)" >&2
     exit 1
     ;;
 esac
@@ -299,6 +307,14 @@ case "$STACK" in
       mcpServers: {
         shadcn:    {command: "shadcn", args: ["mcp"]}
       }
+    }')"
+    ;;
+  zephyr-only)
+    # No ZMK/Zephyr first-party MCP server; the user-level core servers
+    # (git, fetch, time) are sufficient. Empty mcpServers keeps the file valid.
+    MCP_JSON="$(jq -n --arg schema "$MCP_SCHEMA" '{
+      "$schema": $schema,
+      mcpServers: {}
     }')"
     ;;
 esac
