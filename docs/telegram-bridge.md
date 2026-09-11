@@ -87,7 +87,7 @@ JSONL, one frame per line. Changes from v1: `enabled` → `remoteOn`, task frame
 
 | dir | frame | payload |
 | --- | --- | --- |
-| ext→daemon | `progress` | `{ kind: turn_start\|turn_end, data: "<turnIndex>" }` — sent **immediately, unbatched**; the daemon uses these for the typing indicator and turn finalization. `{ kind: message, data: "<rendered HTML>", turnIndex }` — flushed from the 1.5 s batch (at `mid`, the turn's final assistant answer only). `{ kind: tool\|todo\|agent_start\|agent_end, data }` batched the same way. `{ kind: error, data: { toolName, text } }` — dedicated tool-error frame (all levels). `{ kind: todo_state, data: { todos: [{ content, status }] } }` — cached by the daemon for `/status`; not rendered. `{ kind: summary, data: { text, source: "ai"\|"digest" } }` — rendered as a standalone `📊` message. `{ kind: btw, data: { text } }` — side-question answer (from `/btw`), rendered as a standalone `💬` message. |
+| ext→daemon | `progress` | `{ kind: turn_start\|turn_end, data: "<turnIndex>" }` — sent **immediately, unbatched**; the daemon uses these for the typing indicator and turn finalization. `{ kind: message, data: "<rendered HTML>", turnIndex }` — flushed from the 1.5 s batch (at `mid`, the turn's final assistant answer only). `{ kind: tool\|todo\|agent_start\|agent_end, data }` batched the same way. `{ kind: error, data: { toolName, text, repeated: number } }` — dedicated tool-error frame (all levels); `repeated` = count of consecutive identical errors. `{ kind: todo_state, data: { todos: [{ content, status }] } }` — cached by the daemon for `/status`; not rendered. `{ kind: summary, data: { text, source: "ai"\|"digest" } }` — rendered as a standalone `📊` message. `{ kind: btw, data: { text } }` — side-question answer (from `/btw` or `??` suffix). `{ kind: ack, data: { emoji: string } }` — rendered directly as-is (no prefix). `{ kind: todo, data }` — rendered at `high`/`xhigh` only. |
 | ext→daemon | `config_set` | `{ topicId, remoteOn?, verbosity? }` |
 | ext→daemon | `config_update` | `{ cwd, remoteOn?, verbosity? }` |
 | ext→daemon | `config_reload` | — |
@@ -101,6 +101,9 @@ JSONL, one frame per line. Changes from v1: `enabled` → `remoteOn`, task frame
 | daemon→ext | `config` | `{ enabled, verbosity, summaryEvery }` (sent on `hello` and after `config_update`; `summaryEvery` defaults to `8`) |
 | daemon→ext | `daemon_status` | `{ sessions, activeSessions }` (activeSessions = sessions with `remoteOn`) |
 | daemon→ext | `pair_done` | `{ success }` (pair-wizard token/group validation result) |
+| daemon→ext | `summarize` | — (trigger `maybeSendSummary()`) |
+| daemon→ext | `todo_request` | — (send captured `todo_list` frame) |
+| daemon→ext | `session_evicted` | `{ reason: "replaced" }` (stream replaced by newer hello; extension stops reconnecting) |
 
 Routing: `hello.cwd` → binding → topic. Free text in a topic goes to the most recently active session for that cwd. Frames without `cwd` (`config_set`, `config_reload`, `pair*`) are control frames routed to the daemon regardless of the sending stream's session — even on a socket that already sent `hello`.
 
@@ -109,12 +112,14 @@ Routing: `hello.cwd` → binding → topic. Free text in a topic goes to the mos
 All commands are typed **inside the bound topic**. Free text (non-command) steers the running session or starts a new turn when idle.
 
 | Command | Effect |
-| `/status` | Workspace + remote on/off + verbosity, live session (turn live/idle) with last-event age and top-5 todos (cached from `todo_state`; "last-known todos" when the session is gone), active-session count |
+| `/status` | HTML status: workspace, remote on/off + verbosity, live session (turn live/idle), active-session count, session uptime, model, context %, subagent counts, last-turn duration, turn count, last-tool age, todo summary (`done/total done, active active`, from the captured `todo` tool result + `todo_state`), last-event age |
 | `/btw <question>` | Side question, answered immediately by a one-shot AI call in the session (does not steer the running turn); answer posts as a `💬` message |
 | `/abort` | Abort the current turn (process keeps running) |
 | `/bind <cwd>` | Bind this topic to a workspace (absolute path) |
 | `/replay [N]` | Resend the last N progress entries (default 10, max 100) |
 | `/ask <question>` | Pose a free-form question with inline buttons |
+| `/summary` | Compile and send a summary of the current turn |
+| `/todo` | Show the current todo list (rendered from the `todo_list` frame the extension answers with, captured from the `todo` tool's authoritative result — the full phase snapshot on every op; a note is posted if nothing has been captured yet) |
 | `/help` | Show this list |
 | `/pair` / `/unpair` | DM pairing (admin only) |
 
@@ -207,4 +212,4 @@ The supervisor (`supervisor.sh`) manages daemon lifecycle:
 cd build/tg-bridge && bun selftest.ts
 ```
 
-Exercises the full daemon path against a local mock Telegram API (no network, no token needed; 19 tests): polling offset persistence, whitelist gate, topic binding, free-text routing, `ask` → inline keyboard → callback → answer, off-by-default free text gate, `config_set`, `config_reload`, auto-pair, `status_request`, `409` → exit 1, `pair_validate_group` (real `getChat` success/failure round-trip), stale-socket replacement (a leftover non-socket `sock` file is replaced by the daemon's fresh listener), **per-turn message isolation** (each turn's lines land in its own Telegram message — a finalized turn's content is edited into its own message, never mixed with a later turn's lines, and every rendered send/edit uses `parse_mode: HTML`), **stale same-cwd session eviction** (a second `hello` for the same cwd destroys the older socket and logs `evicting stale session`), **no duplicate frames after eviction** (messages from the evicted socket's stream produce no Telegram sends/edits), **unchanged-text edit skip** (a flush whose text equals the last sent text performs zero `editMessageText` calls and zero `message is not modified` log entries), and **empty-turn suppression** (a whitespace-only turn renders nothing; a following turn renders exactly its real content).
+Exercises the full daemon path against a local mock Telegram API (no network, no token needed; 20 tests): polling offset persistence, whitelist gate, topic binding, free-text routing, `ask` → inline keyboard → callback → answer, off-by-default free text gate, `config_set`, `config_reload`, auto-pair, `status_request`, `409` → exit 1, `pair_validate_group` (real `getChat` success/failure round-trip), stale-socket replacement (a leftover non-socket `sock` file is replaced by the daemon's fresh listener), **per-turn message isolation** (each turn's lines land in its own Telegram message — a finalized turn's content is edited into its own message, never mixed with a later turn's lines, and every rendered send/edit uses `parse_mode: HTML`), **stale same-cwd session eviction** (second hello destroys first stream, other cwds untouched), **no duplicate frames after eviction** (evicted stream's progress goes to the new session), **skip unchanged-text edit** (finalized turn with identical text skips edit), **empty turn publishes nothing** (whitespace-only turn creates no message), **session_evicted frame on same-cwd reconnect** (evicted client receives { type: "session_evicted" } frame).

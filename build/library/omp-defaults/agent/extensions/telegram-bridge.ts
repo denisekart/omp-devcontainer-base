@@ -28,6 +28,8 @@ import type {
   TodoReminderEvent,
   AgentStartEvent,
   AgentEndEvent,
+  SessionCompactingEvent,
+  SessionCompactEvent,
   SessionShutdownEvent,
   SessionStartEvent,
   CustomToolCallEvent,
@@ -58,6 +60,29 @@ interface PendingAnswer {
 interface ProgressBatch {
   lines: string[];
   timer: Timer | null;
+}
+
+interface StructuredDigest {
+  userMessages: string[];
+  toolOneLiners: string[];
+  assistantExcerpts: string[];
+}
+
+interface LastErrorEntry {
+  error: string;
+  text: string | null;
+  count: number;
+}
+
+interface TodoPhase {
+  phase: string;
+  todos: { content: string; status: "pending" | "in_progress" | "completed" | "abandoned" | "blocked" }[];
+}
+
+interface TodosSummary {
+  done: number;
+  active: number;
+  total: number;
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -101,13 +126,29 @@ let ompVersion = "unknown";
 let recvBuffer = "";
 let shuttingDown = false;
 let supervisorProcess: child_process.ChildProcess | null = null;
-let daemonSocketPath = "";
+const digest: StructuredDigest = { userMessages: [], toolOneLiners: [], assistantExcerpts: [] };
 let midFinalText = "";
 let turnsSinceSummary = 0;
-const digest: string[] = [];
-let toolCallsThisTurn = 0;
+let lastError: LastErrorEntry | null = null;
+const todoPhases: TodoPhase[] = [];
+let todoUpdatedAt = 0;
+let sessionStartAt = 0;
+let lastToolAt = 0;
+let turnDurationMs: number | null = null;
+let turnStartAt = 0;
+let _daemonSocketPath = "";
+let evictedByDaemon = false;
 let summaryThisTurn = false;
-// True while a free-text prompt ending in "??": the next turn's final answer
+let heartbeatTimer: number | null = null;
+let toolCallsThisTurn = 0;
+let compacting = false;
+// Cumulative cross-turn progress recaps: the per-turn digest is cleared every
+// turn_start, so without this the summarizer has zero cross-turn memory and
+// claims "no prior progress" after real work.
+const turnRecaps: string[] = [];
+// Set when an abort frame was delivered; cleared at the next turn_start.
+// Supresses the plan-completion summary for the aborted run.
+let abortPending = false;
 // is delivered to Telegram regardless of verbosity.
 let nextTurnDeliverFinal = false;
 
@@ -115,6 +156,13 @@ let nextTurnDeliverFinal = false;
 
 function getSocketPath(): string {
   return process.env[SOCKET_PATH_ENV] ?? DEFAULT_SOCK_PATH;
+}
+
+/** Readable model identity for display (ctxRef.model is a Model object, not a string). */
+function modelName(): string | null {
+  const m = ctxRef?.model as { name?: string; id?: string } | undefined;
+  if (!m) return null;
+  return (typeof m.name === "string" && m.name) || (typeof m.id === "string" && m.id) || null;
 }
 
 function getConfigPath(): string {
@@ -283,6 +331,26 @@ function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function extractToolErrorText(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (result && typeof result === "object") {
+    const obj = result as Record<string, unknown>;
+    if (Array.isArray(obj.content)) {
+      const texts = obj.content
+        .filter((c: unknown): c is { type: string; text?: string } => typeof c === "object" && c !== null && "type" in c && typeof (c as Record<string, unknown>).type === "string")
+        .filter((c: { type: string }) => c.type === "text")
+        .map((c: { text?: string }) => c.text ?? "")
+        .filter((t: string) => t.length > 0);
+      if (texts.length > 0) return texts[0].slice(0, 200);
+    }
+    if ("error" in obj && typeof obj.error === "string") return obj.error;
+    if ("message" in obj && typeof obj.message === "string") return obj.message;
+    const firstLine = JSON.stringify(obj).split("\n")[0];
+    return firstLine.slice(0, 200);
+  }
+  return String(result ?? "").slice(0, 200);
+}
+
 /**
  * Convert markdown-ish progress text into Telegram HTML. Escape &/</> first,
  * then: ``` fences → <pre><code>, inline `code`, **bold** → <b>. If the result
@@ -293,6 +361,7 @@ function toTelegramHtml(text: string): string {
   let out = esc.replace(/```([\s\S]*?)```/g, (_, code) => `<pre><code>${code}</code></pre>`);
   out = out.replace(/`([^`\n]+)`/g, "<code>$1</code>");
   out = out.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  out = out.replace(/\*([^*\n]+)\*/g, "<i>$1</i>");
   const tagCount = out.split("<").length - 1;
   if (tagCount > 150) return esc;
   return out;
@@ -432,14 +501,16 @@ function connectSocket(): void {
   if (connected) return;
 
   const sockPath = getSocketPath();
-  daemonSocketPath = sockPath;
+  _daemonSocketPath = sockPath;
   try {
     socket = new net.Socket();
     socket.connect(sockPath, () => {
       connected = true;
+      evictedByDaemon = false;
       reconnectBackoffMs = RECONNECT_MIN_MS;
       log("connected");
       sendHello();
+      startHeartbeat();
     });
 
     socket.on("data", (data: Buffer) => {
@@ -463,7 +534,7 @@ function connectSocket(): void {
     socket.on("close", () => {
       connected = false;
       recvBuffer = "";
-      if (!shuttingDown) scheduleReconnect();
+      if (!shuttingDown && !evictedByDaemon) scheduleReconnect();
     });
 
     socket.on("error", () => {
@@ -478,6 +549,7 @@ function connectSocket(): void {
 
 function closeSocket(): void {
   shuttingDown = true;
+  stopHeartbeat();
   if (socket) {
     try {
       safeSend({ type: "bye" });
@@ -580,6 +652,7 @@ function handleFrame(frame: Record<string, unknown>): void {
       break;
     }
     case "abort": {
+      abortPending = true;
       if (ctxRef?.isIdle?.() === false) {
         ctxRef?.abort?.();
       }
@@ -596,6 +669,36 @@ function handleFrame(frame: Record<string, unknown>): void {
           pending.resolve(value);
         }
       }
+      break;
+    }
+    case "todo_request": {
+      // Empty request frame — respond with the full captured todo state.
+      // Always answer when connected so /todo is never silent (empty list
+      // renders as a note on the daemon side).
+      if (connected) {
+        safeSend({
+          type: "progress" as const,
+          kind: "todo_list" as const,
+          data: {
+            phases: todoPhases.map((p) => ({
+              name: p.phase,
+              tasks: p.todos.map((t) => ({ content: t.content, status: t.status })),
+            })),
+            updatedAt: Date.now(),
+          },
+        });
+      }
+      break;
+    }
+    case "summarize": {
+      if (config.enabled && connected && ctxRef) {
+        void maybeSendSummary();
+      }
+      break;
+    }
+    case "session_evicted": {
+      evictedByDaemon = true;
+      stopHeartbeat();
       break;
     }
   }
@@ -954,7 +1057,7 @@ function getRemoteCompletions(argumentPrefix: string): AutocompleteItem[] | null
     if (lower.slice(0, sp) === "verbosity") {
       const rest = argumentPrefix.slice(sp + 1);
       return REMOTE_VERBOSITY_LEVELS.filter((l) => l.startsWith(rest)).map((l) => ({
-        value: `${l} `,
+        value: `verbosity ${l} `,
         label: l,
         description: `Set verbosity to ${l}`,
       }));
@@ -982,19 +1085,112 @@ function registerRemoteCommand(pi: ExtensionAPI): void {
     // registerCommand may not exist in -p mode; no-op
   }
 }
-// ── Summary ──────────────────────────────────────────────────────────────────
+function sendStateFrame(): void {
+  if (!config.enabled || !connected) return;
+  const usage = ctxRef?.getContextUsage?.();
+  const snapshot = ctxRef?.getAsyncJobSnapshot?.();
+  const running = snapshot?.running ?? [];
+  const recent = snapshot?.recent ?? [];
+  const model = modelName();
+  const doneCount = todoPhases.reduce((s, p) => s + p.todos.filter((t) => t.status === "completed" || t.status === "abandoned").length, 0);
+  const activeCount = todoPhases.reduce((s, p) => s + p.todos.filter((t) => t.status === "pending" || t.status === "in_progress" || t.status === "blocked").length, 0);
+  const totalTasks = todoPhases.reduce((s, p) => s + p.todos.length, 0);
+  const todosSummary: TodosSummary | null = totalTasks > 0 ? { done: doneCount, active: activeCount, total: totalTasks } : null;
+  safeSend({
+    type: "progress" as const,
+    kind: "state" as const,
+    data: {
+      contextPct: usage?.percent ?? null,
+      jobsRunning: running.length,
+      jobsRecent: recent.length,
+      turnDurationMs,
+      turnCount: currentTurnIndex,
+      sessionStartAt,
+      lastToolAt,
+      todoUpdatedAt,
+      model,
+      todosSummary,
+    },
+  });
+}
 
-async function maybeSendSummary(): Promise<void> {
+
+function startHeartbeat(): void {
+  if (!ctxRef || heartbeatTimer) return;
+  const ref = ctxRef;
+  heartbeatTimer = ref.setInterval(() => {
+    if (!connected) {
+      heartbeatTimer = null;
+      return;
+    }
+    sendStateFrame();
+  }, 30_000);
+}
+
+function stopHeartbeat(): void {
+  if (heartbeatTimer) {
+    ctxRef?.clearTimer?.(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+function buildDigestText(): string {
+  const parts: string[] = [];
+  // Metadata header
+  const model = modelName() ?? "unknown";
+  const usage = ctxRef?.getContextUsage?.();
+  const contextPct = usage?.percent ?? null;
+  const turnLive = turnStartAt > 0;
+  parts.push(`cwd: ${cwd ?? "?"}`);
+  parts.push(`session: ${sessionId || "?"}`);
+  parts.push(`model: ${model}`);
+  parts.push(`verbosity: ${config.verbosity}`);
+  parts.push(`turn: ${turnLive ? "live" : "idle"}`);
+  parts.push(`context: ${contextPct === null ? "n/a" : contextPct + "%"}`);
+  // Cumulative cross-turn progress (most recent first) — the AI's only memory
+  // of earlier turns; without it every summary claims "no prior progress".
+  if (turnRecaps.length) {
+    parts.push("prior progress: " + turnRecaps.slice(-6).reverse().join(" ;; "));
+  }
+  // Tool one-liners (last 5)
+  if (digest.toolOneLiners.length) {
+    parts.push("tools: " + digest.toolOneLiners.slice(-5).join(", "));
+  }
+  // Assistant excerpts (last 200 chars total)
+  if (digest.assistantExcerpts.length) {
+    const last = digest.assistantExcerpts[digest.assistantExcerpts.length - 1];
+    parts.push("assistant: " + (last.length > 200 ? last.slice(0, 200) + "…" : last));
+  }
+  // User messages
+  if (digest.userMessages.length) {
+    parts.push("user: " + digest.userMessages.join(" » "));
+  }
+  // Todos summary
+  const doneCount = todoPhases.reduce((s, p) => s + p.todos.filter((t) => t.status === "completed" || t.status === "abandoned").length, 0);
+  const activeCount = todoPhases.reduce((s, p) => s + p.todos.filter((t) => t.status === "pending" || t.status === "in_progress" || t.status === "blocked").length, 0);
+  const totalTasks = todoPhases.reduce((s, p) => s + p.todos.length, 0);
+  if (totalTasks > 0) {
+    parts.push(`todos: ${doneCount} done / ${activeCount} active / ${totalTasks} total`);
+  }
+  const full = parts.join(" | ");
+  // Cap at ~3000 chars
+  return full.length > 3000 ? full.slice(0, 3000) + "…" : full;
+}
+
+type SummaryMode = "turn" | "plan";
+
+async function maybeSendSummary(mode: SummaryMode = "turn"): Promise<void> {
+  const prompt =
+    mode === "plan"
+      ? "The plan/task is complete. Summarize the ENTIRE task execution for the user in 3-5 short lines: the goal, what was done (done), anything still in flight, and any blockers. Base it strictly on the 'prior progress' and other evidence — never claim there was no prior work if the evidence shows work was done. Be concise, no preamble."
+      : "Summarize this coding session's progress in 2-4 short lines: what is done, what is in flight, any blockers. Be concise, no preamble.";
   try {
-    const digestText = digest.join(" | ") || "(no events this window)";
+    const digestText = buildDigestText();
     const pi = await import("@oh-my-pi/pi-ai");
     const model = ctxRef?.model;
     if (model) {
       const apiKey = await ctxRef!.modelRegistry.getApiKey(model);
       const ctx: Context = {
-        systemPrompt: [
-          "Summarize this coding session's progress in 2-4 short lines: what is done, what is in flight, any blockers. Be concise, no preamble.",
-        ],
+        systemPrompt: [prompt],
         messages: [{ role: "user" as const, content: [{ type: "text" as const, text: digestText }], timestamp: Date.now() }],
       };
       const resp: AssistantMessage = await pi.completeSimple(model, ctx, { apiKey });
@@ -1005,9 +1201,11 @@ async function maybeSendSummary(): Promise<void> {
         .trim();
       if (text) {
         safeSend({ type: "progress", kind: "summary", data: { text: toTelegramHtml(text), source: "ai" as const } });
-        summaryThisTurn = true;
-        turnsSinceSummary = 0;
-        log(`[btw] ai`);
+        if (mode === "turn") {
+          summaryThisTurn = true;
+          turnsSinceSummary = 0;
+        }
+        log(`[summary] ${mode} ai`);
         return;
       }
     }
@@ -1015,7 +1213,7 @@ async function maybeSendSummary(): Promise<void> {
     // Any failure degrades to digest path
   }
   // Fallback: deterministic digest
-  const fb = "In flight: " + digest.slice(-3).join(", ") + (toolCallsThisTurn ? " · " + toolCallsThisTurn + " tools" : "");
+  const fb = buildDigestText() || "(no events this window)";
   safeSend({ type: "progress", kind: "summary", data: { text: escapeHtml(fb), source: "digest" as const } });
   summaryThisTurn = true;
   turnsSinceSummary = 0;
@@ -1042,7 +1240,10 @@ async function answerBtw(question: string): Promise<void> {
       systemPrompt: [
         "You are answering a quick side question about the coding session you are running. Answer directly in 1-4 short lines, no preamble.",
       ],
-      messages: [{ role: "user" as const, content: [{ type: "text" as const, text: question }], timestamp: Date.now() }],
+      messages: [
+        { role: "user" as const, content: [{ type: "text" as const, text: "Session started at " + new Date(sessionStartAt).toISOString() + ". Current working directory: " + cwd + "." }], timestamp: Date.now() },
+        { role: "user" as const, content: [{ type: "text" as const, text: question }], timestamp: Date.now() },
+      ],
     };
     const resp: AssistantMessage = await pi.completeSimple(model, ctx, { apiKey });
     const text = (resp.content ?? [])
@@ -1062,6 +1263,28 @@ async function answerBtw(question: string): Promise<void> {
   }
 }
 
+function handleUserMessage(
+  ev: { message: { role: "user"; content: string | { type: string; text?: string }[]; synthetic?: boolean; steering?: boolean } },
+  _ctx: ExtensionContext
+): void {
+  const msg = ev.message;
+  if (msg.role !== "user") return;
+  if (msg.synthetic || msg.steering) return;
+  if (typeof msg.content === "string") {
+    if (msg.content.trim()) {
+      digest.userMessages.push(msg.content.trim());
+    }
+    return;
+  }
+  if (Array.isArray(msg.content)) {
+    for (const c of msg.content) {
+      if (c.type === "text" && c.text && c.text.trim()) {
+        digest.userMessages.push(c.text.trim());
+        break;
+      }
+    }
+  }
+}
 // ── Event handlers ─────────────────────────────────────────────────────────
 
 function handleSessionStart(_ev: SessionStartEvent, ctx: ExtensionContext): void {
@@ -1070,6 +1293,7 @@ function handleSessionStart(_ev: SessionStartEvent, ctx: ExtensionContext): void
   sessionId = ctx.sessionManager.getSessionId() ?? "";
   sessionFile = ctx.sessionManager.getSessionFile() ?? "";
   pid = process.pid;
+  sessionStartAt = Date.now();
   try {
     ompVersion = String((piRef?.pi as { VERSION?: string })?.VERSION ?? "unknown");
   } catch {
@@ -1085,10 +1309,15 @@ function handleSessionStart(_ev: SessionStartEvent, ctx: ExtensionContext): void
 function handleTurnStart(ev: TurnStartEvent, _ctx: ExtensionContext): void {
   currentTurnIndex = ev.turnIndex;
   midFinalText = "";
-  digest.length = 0;
+  digest.userMessages.length = 0;
+  digest.toolOneLiners.length = 0;
+  digest.assistantExcerpts.length = 0;
   toolCallsThisTurn = 0;
   summaryThisTurn = false;
   nextTurnDeliverFinal = false;
+  turnStartAt = Date.now();
+  abortPending = false;
+  sendCompactionDone();
   if (config.enabled && connected) {
     safeSend({ type: "progress", kind: "turn_start", data: String(ev.turnIndex) });
   }
@@ -1102,15 +1331,32 @@ function handleTurnEnd(ev: TurnEndEvent, _ctx: ExtensionContext): void {
     safeSend({ type: "progress", kind: "turn_end", data: String(ev.turnIndex) });
   }
   enqueueProgress("turn_end", ev);
+  // Capture turn duration for state frame
+  turnDurationMs = turnStartAt ? Date.now() - turnStartAt : null;
   // Mid: deliver final answer as standalone message frame
-  if ((config.verbosity === "mid" || nextTurnDeliverFinal) && midFinalText.trim() && connected) {
+  if (config.verbosity === "mid" && midFinalText.trim() && connected) {
     safeSend({ type: "progress", kind: "message", data: midFinalText, turnIndex: currentTurnIndex });
+  }
+  // Cross-turn memory: append a one-line recap of the turn that just ended.
+  // The per-turn digest is cleared at the next turn_start, so this is the
+  // only place where completed-turn work survives into later summaries.
+  {
+    const last = digest.assistantExcerpts.length
+      ? digest.assistantExcerpts[digest.assistantExcerpts.length - 1].trim()
+      : "";
+    const tools = digest.toolOneLiners.slice(-3).join(", ");
+    const recap =
+      last.slice(0, 160) ||
+      (tools ? "tools: " + tools.slice(0, 120) : `turn ${ev.turnIndex} ended (no assistant text)`);
+    turnRecaps.push(`t${ev.turnIndex}: ${recap}`);
+    if (turnRecaps.length > 40) turnRecaps.splice(0, turnRecaps.length - 40);
   }
   turnsSinceSummary++;
   const should = (turnsSinceSummary % (config.summaryEvery || 8) === 0) || (toolCallsThisTurn >= 6 && !summaryThisTurn);
   if (config.enabled && connected && should && ctxRef) {
     void maybeSendSummary();
   }
+  sendStateFrame();
 }
 
 function handleToolExecutionStart(
@@ -1118,7 +1364,10 @@ function handleToolExecutionStart(
   _ctx: ExtensionContext
 ): void {
   toolCallsThisTurn++;
-  digest.push(ev.toolName);
+  lastToolAt = Date.now();
+  if (ev.toolName) {
+    digest.toolOneLiners.push(renderToolOneLiner(ev));
+  }
   enqueueProgress("tool", ev);
 }
 
@@ -1126,29 +1375,24 @@ function handleToolExecutionEnd(
   ev: ToolExecutionEndEvent,
   _ctx: ExtensionContext
 ): void {
+  // The todo tool's result carries the full phase snapshot (details.phases)
+  // for every op — the authoritative source for /todo and /status.
+  if (ev.toolName === "todo" && !ev.isError) {
+    captureTodoResult(ev.result);
+  }
   if (ev.isError) {
-    // Build first-line context for error frame
-    let rawResult: string;
-    if (typeof ev.result === "string") {
-      rawResult = ev.result;
+    const text = extractToolErrorText(ev.result);
+    const firstLine = (text.split("\n")[0] ?? "").slice(0, 200);
+    const key = `${ev.toolName}::${firstLine}`;
+    if (lastError && lastError.error === key) {
+      lastError.count += 1;
     } else {
-      rawResult = JSON.stringify(ev.result);
+      lastError = { error: key, text: firstLine, count: 1 };
     }
-    const firstLine = rawResult.split("\n")[0] ?? "";
-    const maxLen = 200;
-    let firstLineTrunc: string;
-    if (firstLine.length > maxLen) {
-      firstLineTrunc = firstLine.slice(0, maxLen) + "…";
-    } else {
-      firstLineTrunc = firstLine;
-    }
-    // Send dedicated error frame at all levels
     if (connected) {
-      safeSend({ type: "progress", kind: "error", data: { toolName: ev.toolName, text: firstLineTrunc } });
+      safeSend({ type: "progress", kind: "error", data: { toolName: ev.toolName, text: escapeHtml(firstLine), repeated: lastError.count } });
     }
-    // Add error marker to digest (the dedicated error frame above is the
-    // user-visible delivery at all levels).
-    digest.push(`❌ ${ev.toolName}`);
+    digest.toolOneLiners.push(`❌ ${ev.toolName}: ${firstLine}`);
   }
 }
 
@@ -1163,15 +1407,86 @@ function handleMessageEnd(ev: MessageEndEvent, _ctx: ExtensionContext): void {
   if (ev.message.role === "assistant" && ev.message.content) {
     for (const c of ev.message.content) {
       if (c.type === "text" && c.text) {
-        digest.push(c.text.slice(0, 120));
+        digest.assistantExcerpts.push(c.text.slice(0, 120));
         break;
       }
     }
   }
 }
 
+type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
+
+function normalizeTodoPhases(raw: unknown): TodoPhase[] {
+  const phases: TodoPhase[] = [];
+  if (!Array.isArray(raw)) return phases;
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const obj = entry as Record<string, unknown>;
+    const name = typeof obj.phase === "string" ? obj.phase : typeof obj.name === "string" ? obj.name : "General";
+    const items = (obj.items ?? []) as unknown[];
+    const tasks: { content: string; status: TodoStatus }[] = [];
+    for (const item of items) {
+      if (typeof item === "string") tasks.push({ content: item, status: "pending" });
+      else if (item && typeof item === "object") {
+        const ti = item as Record<string, unknown>;
+        if (typeof ti.content === "string") {
+          tasks.push({ content: ti.content, status: (typeof ti.status === "string" ? ti.status : "pending") as TodoStatus });
+        }
+      }
+    }
+    if (tasks.length > 0) phases.push({ phase: name, todos: tasks });
+  }
+  return phases;
+}
+
+function upsertPhase(phase: string, tasks: { content: string; status: TodoStatus }[]): void {
+  const idx = todoPhases.findIndex((p) => p.phase === phase);
+  if (idx >= 0) todoPhases[idx] = { phase, todos: tasks };
+  else todoPhases.push({ phase, todos: tasks });
+}
+
+/**
+ * Replace captured todo state from the authoritative tool result.
+ * ToolExecutionEndEvent.result is the AgentToolResult { content, details };
+ * for the todo tool, details.phases is the full phase snapshot after the op —
+ * present for every op (init/append/start/done/…/view), unlike the input,
+ * which only carries the full list for init/append.
+ */
+function captureTodoResult(result: unknown): void {
+  const details = (result && typeof result === "object" ? (result as Record<string, unknown>).details : undefined) as Record<string, unknown> | undefined;
+  if (!details || !Array.isArray(details.phases)) return;
+  const phases = normalizeTodoPhases(details.phases);
+  if (phases.length > 0) {
+    todoPhases.length = 0;
+    for (const p of phases) upsertPhase(p.phase, p.todos);
+  }
+  todoUpdatedAt = Date.now();
+}
+
 function handleTodoReminder(ev: TodoReminderEvent, _ctx: ExtensionContext): void {
   enqueueProgress("todo", ev);
+  // Fold reminder todos (incomplete only) into captured phases by content;
+  // seed a phase for any unknown task so the list is never empty when the
+  // session restored tasks without a captured todo op this session.
+  for (const t of ev.todos ?? []) {
+    const content = typeof t.content === "string" ? t.content : "";
+    if (!content) continue;
+    const status = (typeof t.status === "string" ? t.status : "pending") as TodoStatus;
+    let found = false;
+    for (const p of todoPhases) {
+      const existing = p.todos.find((x) => x.content === content);
+      if (existing) { existing.status = status; found = true; break; }
+    }
+    if (!found) {
+      let phase = todoPhases.find((p) => p.phase === "Tasks");
+      if (!phase) {
+        phase = { phase: "Tasks", todos: [] };
+        todoPhases.push(phase);
+      }
+      phase.todos.push({ content, status });
+    }
+  }
+  todoUpdatedAt = Date.now();
   // Send todo_state frame for /status
   if (connected) {
     safeSend({ type: "progress", kind: "todo_state", data: { todos: (ev.todos ?? []).map((t) => ({ content: t.content ?? "", status: t.status ?? "" })) } });
@@ -1184,6 +1499,51 @@ function handleAgentStart(ev: AgentStartEvent, _ctx: ExtensionContext): void {
 
 function handleAgentEnd(ev: AgentEndEvent, _ctx: ExtensionContext): void {
   enqueueProgress("agent_end", ev);
+  // Plan completion: the whole task finished (no auto-continuation scheduled,
+  // not an aborted run, and no summary already sent this turn).
+  if (
+    config.enabled &&
+    connected &&
+    ctxRef &&
+    ev.willContinue !== true &&
+    !abortPending &&
+    !summaryThisTurn
+  ) {
+    void maybeSendSummary("plan");
+  }
+}
+
+/**
+ * Signal the end of a compaction window. Guarded by the compacting flag so it
+ * fires exactly once (from session_compact or, if that never fires, from the
+ * next turn_start).
+ */
+function sendCompactionDone(): void {
+  if (!compacting) return;
+  compacting = false;
+  if (config.enabled && connected) {
+    safeSend({ type: "progress", kind: "compaction_done", data: { at: Date.now() } });
+  }
+}
+
+function handleCompacting(_ev: SessionCompactingEvent, _ctx: ExtensionContext): void {
+  compacting = true;
+  if (config.enabled && connected) {
+    safeSend({ type: "progress", kind: "compacting", data: { at: Date.now() } });
+  }
+}
+
+function handleCompactionEnd(ev: SessionCompactEvent, _ctx: ExtensionContext): void {
+  sendCompactionDone();
+  const before = ev.compactionEntry?.tokensBefore;
+  const after = ev.compactionEntry?.tokensAfter;
+  if (config.enabled && connected && (typeof before === "number" || typeof after === "number")) {
+    safeSend({
+      type: "progress",
+      kind: "compaction_detail",
+      data: { tokensBefore: before ?? null, tokensAfter: after ?? null },
+    });
+  }
 }
 
 function handleSessionShutdown(_ev: SessionShutdownEvent): void {
@@ -1196,11 +1556,10 @@ async function handleToolCall(
   ev: ToolCallEvent,
   ctx: ExtensionContext
 ): Promise<ToolCallEventResult | undefined> {
-  if (!config.enabled || !connected) return undefined;
-
-  // Only intercept CustomToolCallEvent (ask is not a named variant)
   if (ev.type !== "tool_call") return undefined;
   const custom = ev as CustomToolCallEvent;
+
+  if (!config.enabled || !connected) return undefined;
   if (custom.toolName !== "ask") return undefined;
 
   // Intercept ask: send question, await answer, return block+reason
@@ -1322,7 +1681,11 @@ export default function (pi: ExtensionAPI): void {
   pi.on("todo_reminder", handleTodoReminder);
   pi.on("agent_start", handleAgentStart);
   pi.on("agent_end", handleAgentEnd);
+  pi.on("session.compacting", handleCompacting);
+  pi.on("session_compact", handleCompactionEnd);
 
+  // User message tracking
+  (pi.on as (event: string, handler: (ev: unknown, ctx: ExtensionContext) => void) => void)("user_message", handleUserMessage as (ev: unknown, ctx: ExtensionContext) => void);
   // Ask interception
   pi.on("tool_call", handleToolCall);
 }

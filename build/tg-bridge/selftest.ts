@@ -1555,6 +1555,44 @@ async function t_noDuplicateFramesPerCwd(stateDir: string, handle: SelftestHandl
   mockServer.stop();
   return clean;
 }
+// Session evicted frame: when a second client connects with the same cwd, the
+// first client must receive a { type: "session_evicted" } frame so it knows
+// the daemon has replaced its stream.
+async function t_sessionEvicted(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const daemon = spawnDaemonWithMock(stateDir, port);
+  handle.daemon = daemon;
+  await sleep(200);
+
+  const c1 = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = c1;
+  c1.send({ type: "hello", cwd: projectCwd, sessionId: "sess-one", ompVersion: "18.0.0", pid: process.pid });
+  await waitForFrame(c1, "config");
+
+  // Second client for the same cwd — should evict c1.
+  const c2 = await connectSocket(join(stateDir, "sock"));
+  c2.send({ type: "hello", cwd: projectCwd, sessionId: "sess-two", ompVersion: "18.0.0", pid: process.pid });
+  await waitForFrame(c2, "config");
+  await sleep(200);
+
+  // c1 must have received a session_evicted frame.
+  const evicted = c1.messages.some(
+    (m) => typeof m === "object" && m !== null && "type" in m && (m as Record<string, unknown>).type === "session_evicted",
+  );
+
+  c1.socket.destroy();
+  c2.socket.destroy();
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  mockServer.stop();
+  return evicted;
+}
 
 // Unchanged-text edit skip: finalizing a turn whose text was already sent
 // must not call editMessageText again (kills the 'message is not modified'
@@ -1651,15 +1689,13 @@ async function t_emptyTurnPublishesNothing(stateDir: string, handle: SelftestHan
   await sleep(200);
   c.send({ type: "progress", kind: "message", data: "empty-turn-real" });
   await sleep(300);
-
-  const rendered = mockServer.getCalls().filter(
-    (call) => call.method === "sendMessage" || call.method === "editMessageText",
-  );
+  const rendered = mockServer.getCalls().filter((call) => call.method === "sendMessage" || call.method === "editMessageText");
   const emptyOnly = rendered.filter((call) => {
     const t = String(call.args.text ?? "");
     return t.trim() === "";
   });
   const withReal = rendered.filter((call) => String(call.args.text ?? "").includes("empty-turn-real"));
+
 
   c.socket.destroy();
   daemon.kill("SIGTERM");
@@ -1668,6 +1704,234 @@ async function t_emptyTurnPublishesNothing(stateDir: string, handle: SelftestHan
   return emptyOnly.length === 0 && withReal.length === 1;
 }
 
+// /todo: the daemon must forward a todo_request frame to the live session and
+// render the extension's todo_list answer (not stay silent). Regression for
+// the "nothing happens on /todo" bug: the extension used to only answer when
+// it had captured todo state, so a session that never ran an init op was
+// silent. The extension now always answers; the daemon renders a note when
+// the answer is empty.
+async function t_todoCommand(stateDir: string, handle: SelftestHandle): Promise<boolean> {
+  const mockServer = new MockTelegramServer();
+  await mockServer.start();
+  handle.mockServer = mockServer;
+  const port = mockServer.getPort();
+
+  const projectCwd = join(stateDir, "project");
+  mkdirSync(projectCwd, { recursive: true });
+
+  const config = {
+    botToken: "test:token",
+    groupId: -1001234567890,
+    allowedUserIds: [42],
+    editIntervalMs: 1500,
+  };
+  writeJson(join(stateDir, "config.json"), config);
+
+  const daemon = spawn("bun", [join(REPO_ROOT, "build/tg-bridge/daemon.ts")], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      TG_BRIDGE_STATE_DIR: stateDir,
+      TG_BRIDGE_API_BASE: `http://127.0.0.1:${port}`,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  handle.daemon = daemon;
+  await sleep(200);
+
+  const socketClient = await connectSocket(join(stateDir, "sock"));
+  handle.socketClient = socketClient;
+  socketClient.send({
+    type: "hello",
+    cwd: projectCwd,
+    sessionId: "todo-sess",
+    ompVersion: "18.0.0",
+    pid: process.pid,
+  });
+  // Bind topic 1 → projectCwd, remote on (mirrors /bind + remoteOn=true).
+  socketClient.send({
+    type: "config_set",
+    topicId: 1,
+    cwd: projectCwd,
+    remoteOn: true,
+    verbosity: "mid",
+  });
+  await sleep(200);
+
+  const textOf = (c: MockCall) => String((c.args as Record<string, unknown>).text ?? "");
+
+  // --- Case 1: /todo → todo_request frame → todo_list answer → rendered ---
+  // config_update drives the live session's remoteOn (config_set only binds the topic).
+  socketClient.send({
+    type: "config_update",
+    cwd: projectCwd,
+    remoteOn: true,
+    verbosity: "mid",
+  });
+  await sleep(200);
+  mockServer.injectUpdate({
+    update_id: 1,
+    message: {
+      message_id: 10,
+      from: { id: 42, first_name: "Admin" },
+      chat: { id: -1001234567890, type: "supergroup" },
+      date: Date.now(),
+      text: "/todo",
+      message_thread_id: 1,
+    },
+  });
+  await sleep(200);
+
+  const request = socketClient.messages.find(
+    (m) =>
+      typeof m === "object" &&
+      m !== null &&
+      (m as Record<string, unknown>).type === "todo_request",
+  );
+  if (!request) {
+    daemon.kill("SIGTERM");
+    socketClient.socket.end();
+    mockServer.stop();
+    return false;
+  }
+
+  // The (fixed) extension answers todo_request with its full captured state.
+  socketClient.send({
+    type: "progress",
+    kind: "todo_list",
+    data: {
+      phases: [
+        {
+          name: "Verify",
+          tasks: [
+            { content: "Gates green", status: "completed" },
+            { content: "Deploy daemon", status: "in_progress" },
+          ],
+        },
+      ],
+      updatedAt: Date.now(),
+    },
+  });
+  await sleep(250);
+
+  const renderedList = mockServer
+    .getCalls()
+    .filter((c) => c.method === "sendMessage" || c.method === "editMessageText")
+    .map(textOf)
+    .find((t) => t.includes("Gates green") && t.includes("Deploy daemon"));
+  if (!renderedList) {
+    daemon.kill("SIGTERM");
+    socketClient.socket.end();
+    mockServer.stop();
+    return false;
+  }
+
+  // --- Case 2: empty todo_list answer must still render a note (no silence) ---
+  mockServer.injectUpdate({
+    update_id: 2,
+    message: {
+      message_id: 11,
+      from: { id: 42, first_name: "Admin" },
+      chat: { id: -1001234567890, type: "supergroup" },
+      date: Date.now(),
+      text: "/todo",
+      message_thread_id: 1,
+    },
+  });
+  await sleep(200);
+  socketClient.send({
+    type: "progress",
+    kind: "todo_list",
+    data: { phases: [], updatedAt: Date.now() },
+  });
+  await sleep(250);
+
+  const renderedNote = mockServer
+    .getCalls()
+    .filter((c) => c.method === "sendMessage" || c.method === "editMessageText")
+    .map(textOf)
+    .find((t) => t.includes("No todos captured yet"));
+
+  // --- Case 3: mistyped /todo/status must normalize to /todo (not free text) ---
+  const requestsBefore = socketClient.messages.filter(
+    (m) =>
+      typeof m === "object" &&
+      m !== null &&
+      (m as Record<string, unknown>).type === "todo_request",
+  ).length;
+  mockServer.injectUpdate({
+    update_id: 3,
+    message: {
+      message_id: 12,
+      from: { id: 42, first_name: "Admin" },
+      chat: { id: -1001234567890, type: "supergroup" },
+      date: Date.now(),
+      text: "/todo/status",
+      message_thread_id: 1,
+    },
+  });
+  await sleep(200);
+  socketClient.send({ type: "progress", kind: "todo_list", data: { phases: [], updatedAt: Date.now() } });
+  await sleep(250);
+
+  const requestsAfter = socketClient.messages.filter(
+    (m) =>
+      typeof m === "object" &&
+      m !== null &&
+      (m as Record<string, unknown>).type === "todo_request",
+  ).length;
+  const freeTextPrompts = socketClient.messages.filter(
+    (m) =>
+      typeof m === "object" &&
+      m !== null &&
+      (m as Record<string, unknown>).type === "prompt",
+  ).length;
+
+  // --- Case 4: unknown /-command must ack (never silent at any verbosity) ---
+  mockServer.injectUpdate({
+    update_id: 4,
+    message: {
+      message_id: 13,
+      from: { id: 42, first_name: "Admin" },
+      chat: { id: -1001234567890, type: "supergroup" },
+      date: Date.now(),
+      text: "/frobnicate",
+      message_thread_id: 1,
+    },
+  });
+  await sleep(200);
+  const unknownAck = mockServer
+    .getCalls()
+    .filter((c) => c.method === "sendMessage" || c.method === "editMessageText")
+    .map(textOf)
+    .find((t) => t.includes("Unknown command"));
+
+  // --- Case 5: /SUMMARY (wrong case) must resolve to /summary (not silent) ---
+  mockServer.injectUpdate({
+    update_id: 5,
+    message: {
+      message_id: 14,
+      from: { id: 42, first_name: "Admin" },
+      chat: { id: -1001234567890, type: "supergroup" },
+      date: Date.now(),
+      text: "/SUMMARY",
+      message_thread_id: 1,
+    },
+  });
+  await sleep(200);
+  const summarizeFrames = socketClient.messages.filter(
+    (m) =>
+      typeof m === "object" &&
+      m !== null &&
+      (m as Record<string, unknown>).type === "summarize",
+  ).length;
+  daemon.kill("SIGTERM");
+  await new Promise((r) => daemon.on("exit", r));
+  socketClient.socket.end();
+  mockServer.stop();
+
+  return Boolean(renderedList) && Boolean(renderedNote) && requestsAfter > requestsBefore && freeTextPrompts === 0 && Boolean(unknownAck) && summarizeFrames > 0;
+}
 // --- Main ------------------------------------------------------------------
 
 async function main(): Promise<void> {
@@ -1693,7 +1957,9 @@ async function main(): Promise<void> {
     { name: "evict stale same-cwd session", run: (d, h) => t_evictStaleSession(d, h) },
     { name: "no duplicate frames after eviction", run: (d, h) => t_noDuplicateFramesPerCwd(d, h) },
     { name: "skip unchanged-text edit", run: (d, h) => t_skipUnchangedEdit(d, h) },
+    { name: "session_evicted frame on same-cwd reconnect", run: (d, h) => t_sessionEvicted(d, h) },
     { name: "empty turn publishes nothing", run: (d, h) => t_emptyTurnPublishesNothing(d, h) },
+    { name: "/todo renders todo_list answer", run: (d, h) => t_todoCommand(d, h) },
   ];
 
   const results: { name: string; passed: boolean }[] = [];

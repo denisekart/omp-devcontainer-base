@@ -12,6 +12,8 @@ export interface SessionState {
   ompVersion: string;
   pid: number;
   turnLive: boolean;
+  /** True while a context compaction is in flight (session.compacting fired, session_compact not yet). */
+  compacting: boolean;
   lastEventAt: number;
   remoteOn: boolean;
   verbosity: Verbosity;
@@ -192,6 +194,7 @@ export class SocketManager implements SocketServer {
           ompVersion,
           pid,
           turnLive: false,
+          compacting: false,
           remoteOn: false,
           verbosity: "mid",
           lastEventAt: Date.now(),
@@ -200,6 +203,7 @@ export class SocketManager implements SocketServer {
         const existing = this.sessions.get(cwd);
         if (existing && existing.stream && existing.stream !== socket) {
           this.log(`evicting stale session for ${cwd} (old ${existing.sessionId})`);
+          this.sendFrame(cwd, { type: "session_evicted", reason: "replaced" });
           existing.stream.destroy();
         }
         this.sessions.set(cwd, state);
@@ -213,6 +217,8 @@ export class SocketManager implements SocketServer {
           session.lastEventAt = Date.now();
           if (kind === "turn_start") session.turnLive = true;
           if (kind === "turn_end") session.turnLive = false;
+          if (kind === "compacting") session.compacting = true;
+          if (kind === "compaction_done") session.compacting = false;
         }
         this.callbacks.onProgress(cwd, kind, frame.data);
         break;
@@ -290,6 +296,17 @@ export class SocketManager implements SocketServer {
         break;
       default:
         this.log(`Unknown frame type: ${type}`);
+  }
+}
+  evictStaleSessions(evictionThresholdMs = 90_000): void {
+    const now = Date.now();
+    for (const [cwd, session] of this.sessions) {
+      if (now - session.lastEventAt > evictionThresholdMs) {
+        this.log(`evicting stale session for ${cwd} (last event ${Math.floor((now - session.lastEventAt) / 1000)}s ago)`);
+        this.sendFrame(cwd, { type: "session_evicted", reason: "stale" });
+        session.stream?.destroy();
+        this.sessions.delete(cwd);
+      }
     }
   }
 

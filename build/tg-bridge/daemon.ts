@@ -72,7 +72,6 @@ interface PendingQuestion {
   questionId: string;
   options: string[];
 }
-
 interface Daemon {
   config: Config;
   stateDir: string;
@@ -91,6 +90,17 @@ interface Daemon {
   activeTurn: Map<number, string>;
   typingTimers: Map<string, number>;
   lastTodos: Map<string, { content: string; status: string }[]>;
+  lastState: Map<string, {
+    contextPct: number | null;
+    jobsRunning: number;
+    jobsRecent: number;
+    turnDurationMs: number | null;
+    turnCount: number;
+    sessionStartAt: number;
+    lastToolAt: number | null;
+    model: string | null;
+    todosSummary: { done: number; active: number; total: number } | null;
+  }>;
 }
 
 function logMsg(d: Daemon, msg: string): void {
@@ -193,7 +203,19 @@ async function handleCommand(
   text: string,
   topicId: number,
 ): Promise<void> {
-  const [cmd, ...rest] = text.trim().split(/\s+/);
+  const [cmd0, ...rest] = text.trim().split(/\s+/);
+  // Tolerate mistyped / mistyped-case command names: /todo/status, /SUMMARY,
+  // /status/verbose resolve to the longest known command they start with
+  // (case-insensitive). `arg` always comes from the original split, so
+  // /bind <cwd>, /remote on, etc. keep their arguments verbatim.
+  const KNOWN_COMMANDS = ["/help", "/bind", "/status", "/abort", "/replay", "/ask", "/btw", "/summary", "/todo", "/pair", "/unpair", "/remote"];
+  const cmdLower = cmd0.toLowerCase();
+  // Exact case-insensitive match first (/SUMMARY → /summary), then longest
+  // known-command prefix for typos (/todo/status → /todo).
+  let cmd = KNOWN_COMMANDS.find((c) => c.toLowerCase() === cmdLower);
+  if (!cmd) {
+    cmd = KNOWN_COMMANDS.filter((c) => cmdLower.startsWith(c)).sort((a, b) => b.length - a.length)[0];
+  }
   const arg = rest.join(" ").trim();
   const binding = d.bindings.get(topicId);
   const cwd = binding?.cwd;
@@ -202,21 +224,23 @@ async function handleCommand(
     case "/help": {
       await tgSend(
         d,
-        [
-          "Commands (this topic):",
-          "/status — daemon + session status",
-          "/abort — abort the current turn (process keeps running)",
-          "/bind <cwd> — bind this topic to a workspace",
-          "/replay [N] — resend last N progress entries",
-          "/ask <question> — pose a question with inline buttons",
-          "/pair <cwd> — pair this topic with a workspace (auto-bind)",
-          "/unpair — unbind this topic",
-          "/remote on|off — toggle remote for this topic",
-          "Free text — steer (running) / new turn (idle); trailing `??` always delivers the next turn's final answer",
-          "/btw <question> — side question, answered immediately (does not steer the turn)",
-          "/pair /unpair — DM pairing (admin)",
-        ].join("\n"),
+        "<b>Topic commands:</b>\n" +
+          "<b>/status</b> — daemon + session status\n" +
+          "<b>/abort</b> — abort the current turn (process keeps running)\n" +
+          "<b>/bind</b> &lt;cwd&gt; — bind this topic to a workspace\n" +
+          "<b>/replay</b> [N] — resend last N progress entries\n" +
+          "<b>/ask</b> &lt;question&gt; — pose a question with inline buttons\n" +
+          "<b>/summary</b> — request a summary from the live session\n" +
+          "<b>/todo</b> — request the current task list\n" +
+          "<b>/btw</b> &lt;question&gt; — side question, answered immediately (does not steer the turn)\n" +
+          "Free text — steer (running) / new turn (idle); trailing <code>??</code> always delivers the next turn's final answer\n\n" +
+          "<b>Pairing (DM):</b>\n" +
+          "<b>/pair</b> — pair this DM with a workspace (auto-bind)\n" +
+          "<b>/unpair</b> — unbind this topic\n" +
+          "<b>/remote</b> on|off — toggle remote for this topic",
         topicId,
+        undefined,
+        true,
       );
       return;
     }
@@ -242,38 +266,42 @@ async function handleCommand(
       const b = binding;
       const cwdStr: string | undefined = b?.cwd;
       const session = cwdStr ? d.socket.getSession(cwdStr) : undefined;
-      const remoteOn = session?.remoteOn ?? false;
       const sessionCount = d.socket.getSessionCount();
-      const lines: string[] = [
-        `Workspace: ${b?.cwd ?? "(unbound)"}`,
-        `Remote: ${remoteOn ? "on" : "off"}  Verbosity: ${b?.verbosity ?? "mid"}`,
-        `Live session: ${session ? `${session.sessionId} (turn ${session.turnLive ? "live" : "idle"})` : "none"}`,
-        `Active sessions: ${sessionCount}`,
-      ];
+      const state = cwdStr ? d.lastState.get(cwdStr) : undefined;
+      let statusLabel = "none";
       if (session) {
-        const ageMs = Date.now() - session.lastEventAt;
-        const ageStr = formatAge(ageMs);
-        lines.push(`Last event: ${ageStr}`);
-        if (cwdStr) {
-          const todos = d.lastTodos.get(cwdStr);
-          if (todos && todos.length > 0) {
-            lines.push("Todos:");
-            for (const t of todos.slice(0, 5)) {
-              lines.push(`  - ${t.content} [${t.status}]`);
-            }
-          }
-        }
-      } else {
-        lines.push("Last event: no session connected");
-        const todos = cwdStr ? d.lastTodos.get(cwdStr) : undefined;
-        if (todos && todos.length > 0) {
-          lines.push("Last-known todos:");
-          for (const t of todos.slice(0, 5)) {
-            lines.push(`  - ${t.content} [${t.status}]`);
-          }
-        }
+        if (session.compacting) statusLabel = "compacting";
+        else if (session.turnLive) statusLabel = "live";
+        else statusLabel = "idle";
+        statusLabel = `${escapeHtml(session.sessionId)} (turn ${statusLabel})`;
       }
-      await tgSend(d, lines.join("\n"), topicId);
+      const lines: string[] = [
+        `<b>Workspace:</b> ${escapeHtml(b?.cwd ?? "(unbound)")}`,
+        `<b>Remote:</b> ${session?.remoteOn ? "on" : "off"}  <b>Verbosity:</b> ${escapeHtml(b?.verbosity ?? "mid")}`,
+        `<b>Live session:</b> ${statusLabel}`,
+        `<b>Active sessions:</b> ${sessionCount}`,
+      ];
+      if (session && state && state.sessionStartAt > 0) {
+        lines.push(`<b>Session uptime:</b> ${formatAge(Date.now() - state.sessionStartAt)}`);
+      }
+      if (state) {
+        if (state.model) lines.push(`<b>Model:</b> ${escapeHtml(state.model)}`);
+        if (state.contextPct !== null) lines.push(`<b>Context:</b> ${Math.round(state.contextPct * 10) / 10}%`);
+        lines.push(`<b>Subagents:</b> ${state.jobsRunning} running, ${state.jobsRecent} recent`);
+        if (state.turnDurationMs !== null) lines.push(`<b>Last turn:</b> ${formatAge(state.turnDurationMs)}`);
+        lines.push(`<b>Turns:</b> ${state.turnCount}`);
+        if (state.lastToolAt !== null) lines.push(`<b>Last tool:</b> ${formatAge(Date.now() - state.lastToolAt)}`);
+        if (state.todosSummary) {
+          const { done, active, total } = state.todosSummary;
+          lines.push(`<b>Todos:</b> ${done}/${total} done, ${active} active`);
+        }
+      } else if (!session) {
+        lines.push("<b>Last event:</b> no live session");
+      }
+      if (session) {
+        lines.push(`<b>Last event:</b> ${formatAge(Date.now() - session.lastEventAt)}`);
+      }
+      await tgSend(d, lines.join("\n"), topicId, undefined, true);
       return;
     }
 
@@ -345,6 +373,35 @@ async function handleCommand(
       return;
     }
 
+    case "/summary": {
+      if (!cwd) {
+        await tgSend(d, "This topic is not bound.", topicId);
+        return;
+      }
+      const session = d.socket.getSession(cwd);
+      if (!session || !session.remoteOn) {
+        await tgSend(d, "No live session (or remote is off).", topicId);
+        return;
+      }
+      await tgSend(d, "📊 Compiling latest summary…", topicId);
+      d.socket.sendFrame(cwd, { type: "summarize", turnIndex: 0 });
+      return;
+    }
+
+    case "/todo": {
+      if (!cwd) {
+        await tgSend(d, "This topic is not bound.", topicId);
+        return;
+      }
+      const session = d.socket.getSession(cwd);
+      if (!session || !session.remoteOn) {
+        await tgSend(d, "No live session (or remote is off).", topicId);
+        return;
+      }
+      d.socket.sendFrame(cwd, { type: "todo_request" });
+      return;
+    }
+
     case "/pair": {
       if (!arg) {
         await tgSend(d, "Usage: /pair <cwd>", topicId);
@@ -401,9 +458,12 @@ async function handleCommand(
       return;
     }
 
-    default:
-      // Unknown command — treat as free text below.
+    default: {
+      // Unknown command: always reply (explicit /-commands are never silent),
+      // pointing at /help instead of swallowing the message.
+      await tgSend(d, `Unknown command <code>${escapeHtml(cmd0)}</code>. See <code>/help</code>.`, topicId, undefined, true);
       return;
+    }
   }
 }
 
@@ -542,6 +602,36 @@ function buildSocketCallbacks(d: Daemon) {
       if (topicId === undefined || !session || !session.remoteOn) return;
       const verbosity = session.verbosity;
 
+      // Cache extension state frames for /status (sent per turn_end + 30 s heartbeat).
+      if (kind === "state") {
+        if (data && typeof data === "object") {
+          const st = data as Record<string, unknown>;
+          const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+          const ts = st.todosSummary;
+          const todosSummary =
+            ts && typeof ts === "object"
+              ? {
+                  done: typeof (ts as Record<string, unknown>).done === "number" ? ((ts as Record<string, unknown>).done as number) : 0,
+                  active: typeof (ts as Record<string, unknown>).active === "number" ? ((ts as Record<string, unknown>).active as number) : 0,
+                  total: typeof (ts as Record<string, unknown>).total === "number" ? ((ts as Record<string, unknown>).total as number) : 0,
+                }
+              : null;
+          d.lastState.set(cwd, {
+            contextPct: num(st.contextPct),
+            jobsRunning: typeof st.jobsRunning === "number" ? st.jobsRunning : 0,
+            jobsRecent: typeof st.jobsRecent === "number" ? st.jobsRecent : 0,
+            turnDurationMs: num(st.turnDurationMs),
+            turnCount: typeof st.turnCount === "number" ? st.turnCount : 0,
+            sessionStartAt: typeof st.sessionStartAt === "number" ? st.sessionStartAt : 0,
+            lastToolAt: num(st.lastToolAt),
+            model: typeof st.model === "string" ? st.model : null,
+            todosSummary,
+          });
+        }
+        return;
+      }
+
+
       if (kind === "turn_start") {
         // Start typing indicator for this cwd.
         // Send one immediate typing.
@@ -569,42 +659,18 @@ function buildSocketCallbacks(d: Daemon) {
         d.socket.sendFrame(cwd, { type: "bye" });
         // Clear typing for this cwd.
         const timer = d.typingTimers.get(cwd);
-        if (timer) {
+        if (timer !== undefined) {
           clearInterval(timer);
           d.typingTimers.delete(cwd);
         }
-      } else if (kind === "todo_state") {
-        // Cache todo state; do NOT render.
-        if (data && typeof data === "object" && "todos" in data) {
-          const raw = (data as Record<string, unknown>).todos;
-          if (Array.isArray(raw)) {
-            const todos: { content: string; status: string }[] = [];
-            for (const item of raw) {
-              if (item && typeof item === "object" && "content" in item && "status" in item) {
-                const c = (item as Record<string, unknown>).content;
-                const s = (item as Record<string, unknown>).status;
-                if (typeof c === "string" && typeof s === "string") {
-                  todos.push({ content: c, status: s });
-                }
-              }
-            }
-            d.lastTodos.set(cwd, todos);
+      } else if (kind === "ack") {
+        // Ack frames carry { emoji: string }
+        if (data && typeof data === "object" && "emoji" in data) {
+          const emoji = (data as Record<string, unknown>).emoji;
+          const emojiStr = typeof emoji === "string" ? emoji : "";
+          if (emojiStr) {
+            void renderLine(d, topicId, emojiStr).catch(() => {});
           }
-        }
-      } else if (kind === "summary") {
-        // Send a standalone summary message.
-        if (data && typeof data === "object" && "text" in data) {
-          const text = (data as Record<string, unknown>).text;
-          const textStr = typeof text === "string" ? text : "";
-          void tgSend(d, "📊 " + textStr, topicId, undefined, true).catch(() => {});
-        }
-      } else if (kind === "error") {
-        // Render error at ALL verbosity levels.
-        if (data && typeof data === "object" && "toolName" in data) {
-          const d2 = data as Record<string, unknown>;
-          const toolName = typeof d2.toolName === "string" ? d2.toolName : "";
-          const text = typeof d2.text === "string" ? d2.text : "";
-          void renderLine(d, topicId, "⚠️ " + escapeHtml(toolName) + (text ? ": " + escapeHtml(text) : "")).catch(() => {});
         }
       } else if (kind === "todo") {
         if (verbosity === "high" || verbosity === "xhigh") {
@@ -624,6 +690,92 @@ function buildSocketCallbacks(d: Daemon) {
         addReplayEntry(d.replay, topicId, { text });
         writeReplay(d.replay);
         void renderLine(d, topicId, text).catch(() => {});
+      } else if (kind === "todo_state") {
+        // Cache todo state; do NOT render.
+        if (data && typeof data === "object" && "todos" in data) {
+          const raw = (data as Record<string, unknown>).todos;
+          if (Array.isArray(raw)) {
+            const todos: { content: string; status: string }[] = [];
+            for (const item of raw) {
+              if (item && typeof item === "object" && "content" in item && "status" in item) {
+                const c = (item as Record<string, unknown>).content;
+                const s = (item as Record<string, unknown>).status;
+                if (typeof c === "string" && typeof s === "string") {
+                  todos.push({ content: c, status: s });
+                }
+              }
+            }
+            d.lastTodos.set(cwd, todos);
+            // Update lastState with todosSummary
+            if (cwd) {
+              const state = d.lastState.get(cwd);
+              if (state) {
+                const done = todos.filter((t) => t.status === "done").length;
+                const active = todos.filter((t) => t.status === "active" || t.status === "todo").length;
+                state.todosSummary = { done, active, total: todos.length };
+                d.lastState.set(cwd, state);
+              }
+            }
+          }
+        }
+      } else if (kind === "summary") {
+        // Send a standalone summary message.
+        if (data && typeof data === "object" && "text" in data) {
+          const text = (data as Record<string, unknown>).text;
+          const textStr = typeof text === "string" ? text : "";
+          void tgSend(d, "📊 " + textStr, topicId, undefined, true).catch(() => {});
+        }
+      } else if (kind === "error") {
+        // Render error at ALL verbosity levels; track repeated count.
+        if (data && typeof data === "object" && "toolName" in data) {
+          const d2 = data as Record<string, unknown>;
+          const toolName = typeof d2.toolName === "string" ? d2.toolName : "";
+          const text = typeof d2.text === "string" ? d2.text : "";
+          const repeated = typeof d2.repeated === "number" ? d2.repeated : 0;
+        const msg = `⚠️ ${escapeHtml(toolName)}${text ? ": " + escapeHtml(text) : ""}${repeated > 1 ? ` (×${repeated})` : ""}`;
+          void renderLine(d, topicId, msg).catch(() => {});
+        }
+      } else if (kind === "todo_list") {
+        // Render the current todo list grouped by phase with emoji status marks.
+        // data = { phases: [{ name: string, tasks: [{ content: string, status: string }] }], updatedAt: number }
+        if (data && typeof data === "object" && "phases" in data) {
+          const raw = (data as Record<string, unknown>).phases;
+          if (Array.isArray(raw)) {
+            const lines: string[] = [];
+            for (const phase of raw) {
+              if (phase && typeof phase === "object" && "name" in phase && "tasks" in phase) {
+                const phaseName = (phase as Record<string, unknown>).name;
+                const tasks = (phase as Record<string, unknown>).tasks;
+                if (typeof phaseName === "string" && Array.isArray(tasks)) {
+                  lines.push(`<b>${escapeHtml(phaseName)}</b>`);
+                  for (const item of tasks) {
+                    if (item && typeof item === "object" && "content" in item && "status" in item) {
+                      const c = (item as Record<string, unknown>).content;
+                      const s = (item as Record<string, unknown>).status;
+                      if (typeof c === "string" && typeof s === "string") {
+                        const statusEmoji = s === "completed" ? "✅" : s === "in_progress" ? "⚡" : s === "abandoned" ? "🚫" : s === "blocked" ? "⛔" : "○";
+                        lines.push(`  ${statusEmoji} ${escapeHtml(c)}`);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            if (lines.length > 0) {
+              void renderLine(d, topicId, lines.join("\n")).catch(() => {});
+            } else {
+              void renderLine(d, topicId, "No todos captured yet — they appear once the session runs a <code>todo</code> operation.").catch(() => {});
+            }
+          }
+        }
+      } else if (kind === "compaction_detail") {
+        // Compaction finished — informational only (state flag is set by socket.ts).
+        if (data && typeof data === "object" && "tokensBefore" in data) {
+          const det = data as Record<string, unknown>;
+          const before = typeof det.tokensBefore === "number" ? det.tokensBefore : 0;
+          const after = typeof det.tokensAfter === "number" ? det.tokensAfter : 0;
+          logMsg(d, `compaction: ${before} → ${after} tokens`);
+        }
       }
     },
 
@@ -789,7 +941,7 @@ function buildSocketCallbacks(d: Daemon) {
 // ever edit the active turn's message, so finished turns keep their own
 // final message and are never re-edited — no repeated old-turn content.
 function turnIdFor(d: Daemon, topicId: number): string {
-  return d.activeTurn.get(topicId) ?? `t${Date.now().toString(36)}`;
+  return d.activeTurn.get(topicId) ?? `t$Date.now().toString(36)`;
 }
 
 function renderLine(d: Daemon, topicId: number, line: string): Promise<void> {
@@ -842,7 +994,7 @@ async function pollLoop(d: Daemon): Promise<void> {
         logMsg(d, "409 conflict: another instance is polling this token. Exiting.");
         process.exit(1);
       }
-      logMsg(d, `poll error: ${(err as Error).message}; retrying in 1s`);
+      logMsg(d, `poll error: $(err as Error).message; retrying in 1s`);
       await new Promise((r) => setTimeout(r, 1000));
       continue;
     }
@@ -851,7 +1003,7 @@ async function pollLoop(d: Daemon): Promise<void> {
       try {
         await handleUpdate(d, u);
       } catch (err) {
-        logMsg(d, `update ${u.update_id} error: ${(err as Error).message}`);
+        logMsg(d, `update $u.update_iderror: $(err as Error).message`);
       }
     }
     if (updates.length > 0) {
@@ -890,7 +1042,6 @@ function buildDaemon(): Daemon | null {
   const d: Daemon = {
     config,
     stateDir,
-    apiBase,
     log,
     client,
     socket,
@@ -901,9 +1052,11 @@ function buildDaemon(): Daemon | null {
     activeTurn: new Map(),
     typingTimers: new Map(),
     lastTodos: new Map(),
+    lastState: new Map(),
     qCounter: 0,
     offset: readOffset(),
     socketPath,
+    apiBase,
   };
 
   return d;
@@ -928,6 +1081,10 @@ async function main(): Promise<void> {
   // Socket server for the in-session extension (start() installs the callbacks).
   d.socket.setLogStream(d.log);
   d.socket.start(d.socketPath, buildSocketCallbacks(d));
+  // Staleness sweep: periodically evict stale sessions.
+  setInterval(() => {
+    d.socket.evictStaleSessions();
+  }, 10000);
 
   // SIGHUP handler for config reload.
   process.on("SIGHUP", () => {
