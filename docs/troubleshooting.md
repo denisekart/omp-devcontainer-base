@@ -112,8 +112,8 @@ Presets: `dotnet-aspire-svelte`, `dotnet-only`, `svelte-only`, `generic`. `write
 
 ## Port Forwarding
 
-**Symptom:** ports other than 8888 are not forwarded automatically.
+**Symptom:** newly-created ports (Aspire randomized ports, `omp /stats` on 3847, dev servers) do not appear auto-forwarded.
 
-**Cause:** by design — only port 8888 auto-forwards (with a notify); all other ports are `ignore`d by the `portsAttributes` in the devcontainer config.
+**Cause:** the consumer repo's own `.devcontainer/devcontainer.json` still sets the `0-65535` entry's `onAutoForward` to `"ignore"` (a copy of an older template), or the container has not been reopened since the config changed.
 
-**Fix:** forward other ports manually via the VS Code Ports panel.
+**Fix:** in the repo's `.devcontainer/devcontainer.json`, set the `0-65535` entry's `onAutoForward` to `"notify"`, then reopen the container (devcontainer CLI: `devcontainer reopen`; VS Code: "Rebuild Container"). Forwarded ports then appear in the Forwarded Ports panel with `localhost:<port>` links.

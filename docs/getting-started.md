@@ -33,7 +33,7 @@ Everything below comes from `.devcontainer/distribute.devcontainer.json`, so you
 
 - **Docker-in-Docker feature** (`ghcr.io/devcontainers/features/docker-in-docker`, non-root) — `docker` works inside the container
 - **9 named Docker volume mounts** — your state persists across container rebuilds (see [Persistence at a Glance](#persistence-at-a-glance))
-- **`forwardPorts: [8888]`** — the Hindsight port auto-forwards (with a notify); all other ports are `ignore`d for auto-forward
+- **`forwardPorts: [8888]`** — Hindsight is forwarded explicitly; the `0-65535` catch-all is set to `onAutoForward: "notify"`, so every dynamically-created port (Aspire, `omp /stats`, dev servers) auto-forwards with a notification
 - **VS Code extensions + settings** — 15 extensions; format-on-save, zsh integrated terminal, terminal GPU acceleration off
 - **First-boot `postCreateCommand`** — fixes volume ownership, then runs the ordered chain `link-gitconfig.sh` → `seed-omp-home.sh` → `install-omp-plugins.sh` → `bootstrap.sh`
 - **`postStartCommand`** — starts the `hindsight` tmux session (the self-healing memory supervisor)

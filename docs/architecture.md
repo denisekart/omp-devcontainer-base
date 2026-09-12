@@ -21,7 +21,7 @@ When a doc claim conflicts with a source file, the source file wins.
 | Shell aliases, `bgrun`, zsh options | the `~/.zshrc` block in `build/Dockerfile` (lines 246–280) |
 | VS Code extensions/settings | `customizations` in `.devcontainer/*.json` |
 | Persistent volumes | `mounts` in `.devcontainer/*.json` |
-| Port forwarding (8888) | `forwardPorts` / `portsAttributes` in `.devcontainer/*.json` |
+| Port forwarding (all ports; 8888 = Hindsight) | `forwardPorts` / `portsAttributes` in `.devcontainer/*.json` |
 | Toolchain versions (dotnet, node, bun, npm packages, uv tools) | the `RUN` layers in `build/Dockerfile` |
 | Baked MCP servers | `build/library/omp-defaults/agent/mcp.json`; per-stack project MCP → the `MCP_JSON` case in `build/scripts/bootstrap.sh` (lines 217–247) |
 | Plugin list | the `PLUGINS` array in `build/scripts/install-omp-plugins.sh` |

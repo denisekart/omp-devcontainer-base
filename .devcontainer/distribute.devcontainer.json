@@ -39,7 +39,7 @@
       "onAutoForward": "notify"
     },
     "0-65535": {
-      "onAutoForward": "ignore"
+      "onAutoForward": "notify"
     }
   },
 
