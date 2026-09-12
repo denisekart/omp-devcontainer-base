@@ -287,14 +287,18 @@ To maintain consistency across team members or ensure your model setup lives dir
      memory: "litellm/qwen3-coder-4b"
      tiny: "litellm/qwen3-coder-4b"
 
-   # Retry / Fallback Chains — model-oriented keys apply to every role running
-   # that model (default/slow/plan → worker; smol/memory/tiny → worker).
-   retry:
-     fallbackChains:
-       "litellm/qwen3.8-27b":
-         - "litellm/qwen3.6-35b"
-       "litellm/qwen3-coder-4b":
-         - "litellm/qwen3.6-35b"
+  # Retry / Fallback Chains — model-oriented keys apply to every role running
+  # that model (default/slow/plan → 35B worker → 4B; task → 4B). Applied on
+  # provider errors; chains end at the last online link (session-side tasks
+  # keep running on-device via the tiny-model providers below).
+  retry:
+    fallbackChains:
+      "litellm/qwen3.8-27b":
+        - "litellm/qwen3.6-35b"
+        - "litellm/qwen3-coder-4b"
+      "litellm/qwen3.6-35b":
+        - "litellm/qwen3-coder-4b"
+      "litellm/qwen3-coder-4b": []
 
    # Local Tiny-Model Providers (Task-specific overrides)
    # Side tasks run on the baked-in local model lfm2-1.2b (offline-resilient
@@ -327,15 +331,15 @@ The following native roles are used by the `omp` harness and mapped to the LiteL
 
 | Role | Purpose | Default Local Mapping | LiteLLM Setup Mapping | Rationale |
 | :--- | :--- | :--- | :--- | :--- |
-| `default` | Primary model for interactive chat and coding. | `local/qwen3-coder:32b` | `litellm/qwen3.8-27b` | High capability for general instruction, agentic reasoning and code generation. Falls back to `litellm/qwen3.6-35b` (retry chain). |
-| `smol` | Fast, lightweight model for background tasks (summaries, titles). | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Fast response times and low latency for utility tasks. Falls back to `litellm/qwen3.6-35b` (retry chain). |
-| `slow` | Heavy reasoning model for complex architectural problems. | `local/deepseek-r1:70b` | `litellm/qwen3.8-27b` | Maximum capability available for complex problem-solving. Falls back to `litellm/qwen3.6-35b` (retry chain). |
-| `plan` | Architect model used for planning work in plan mode. | `local/deepseek-r1:70b` | `litellm/qwen3.8-27b` | Strong structured output and planning ability. Falls back to `litellm/qwen3.6-35b` (retry chain). |
-| `task` | Model used for executing delegated subagent tasks. | `local/qwen3-coder:32b` | `litellm/qwen3.6-35b` | **Worker model**: 35B-A3B MoE (3B active) — a very capable coder/specialist given detailed instructions; slightly less agentic reasoning than Qwen 3.8. Serves `--max-num-seqs 6` for parallel subagents. |
-| `memory` | Model used for Hindsight / memory extraction (online fallback). | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Quick extraction of semantic observations into memory. Falls back to `litellm/qwen3.6-35b` (retry chain). |
-| `tiny` | Role fallback when task-specific `tinyModel` is set to `online`. | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Low latency fallback for session titles and background tasks. Falls back to `litellm/qwen3.6-35b` (retry chain). |
+| `default` | Primary model for interactive chat and coding. | `local/qwen3-coder:32b` | `litellm/qwen3.8-27b` | High capability for general instruction, agentic reasoning and code generation. Retries on `litellm/qwen3.6-35b`, then `litellm/qwen3-coder-4b` (retry chain). |
+| `smol` | Fast, lightweight model for background tasks (summaries, titles). | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Fast response times and low latency for utility tasks. Chain-terminating model (no further fallback). |
+| `slow` | Heavy reasoning model for complex architectural problems. | `local/deepseek-r1:70b` | `litellm/qwen3.8-27b` | Maximum capability available for complex problem-solving. Retries on `litellm/qwen3.6-35b`, then `litellm/qwen3-coder-4b` (retry chain). |
+| `plan` | Architect model used for planning work in plan mode. | `local/deepseek-r1:70b` | `litellm/qwen3.8-27b` | Strong structured output and planning ability. Retries on `litellm/qwen3.6-35b`, then `litellm/qwen3-coder-4b` (retry chain). |
+| `task` | Model used for executing delegated subagent tasks. | `local/qwen3-coder:32b` | `litellm/qwen3.6-35b` | **Worker model**: 35B-A3B MoE (3B active) — a very capable coder/specialist given detailed instructions; slightly less agentic reasoning than Qwen 3.8. Serves `--max-num-seqs 6` for parallel subagents. Retries on `litellm/qwen3-coder-4b` (retry chain). |
+| `memory` | Model used for Hindsight / memory extraction (online fallback). | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Quick extraction of semantic observations into memory. Chain-terminating model (no further fallback). |
+| `tiny` | Role fallback when task-specific `tinyModel` is set to `online`. | `local/qwen3-coder:7b` | `litellm/qwen3-coder-4b` | Low latency fallback for session titles and background tasks. Chain-terminating model (no further fallback). |
 
-**Fallback chains (`retry.fallbackChains`)**: model-oriented keys apply whenever that model is active, regardless of role. The baked defaults chain `litellm/qwen3.8-27b → litellm/qwen3.6-35b` and `litellm/qwen3-coder-4b → litellm/qwen3.6-35b`, so every role backed by the Qwen 3.8 model (or the 4B smol model) automatically retries on the Qwen 3.6 worker after provider errors. The true offline path for the small online models is the on-device `lfm2-1.2b` local model (next section).
+**Fallback chains (`retry.fallbackChains`)**: defined in `.omp/config.yml` (the settings store is built only from `config.yml` files — a `retry` key in `models.yml` is not read). Model-oriented keys apply whenever that model is active, regardless of role. The baked defaults chain `litellm/qwen3.8-27b → litellm/qwen3.6-35b → litellm/qwen3-coder-4b` and `litellm/qwen3.6-35b → litellm/qwen3-coder-4b`, so every role backed by the Qwen 3.8 or 3.6 models automatically retries down the chain after provider errors, ending at the 4B model. The true offline path for the small models is the on-device `lfm2-1.2b` local model (next section).
 
 ### 4. Local Tiny Models (On-Device Inference)
 

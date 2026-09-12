@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # seed-omp-home.sh — First-boot seeding of omp config from immutable image defaults
 #
+# User layer receives: agents/, skills/, extensions/, mcp.json, config.yml,
+# and the baked ONNX tiny-model cache (agent/cache) for the on-device local
+# model (lfm2-1.2b). models.yml is intentionally excluded — model
+# definitions are workspace-owned (bootstrap seeds .omp/models.yml; the
+# workspace layer experiments per repo without touching the shared volume).
 # Source: /usr/local/share/omp-defaults/agent (baked into the image, immutable)
 # Target: ~/.omp/agent (persistent volume — user state, sacred)
 #
@@ -38,10 +43,12 @@ if [[ ! -f "${DEFAULTS_SRC}/config.yml" ]]; then
 fi
 
 # Content hash of the defaults tree: relative paths (location-independent),
-# covers file names and contents (excluding ./cache to avoid hashing binary models on every boot).
+# covers file names and contents, INCLUDING ./cache so an image rebuild that
+# changes the baked local model re-copies missing files into existing volumes
+# (the merge is copy-if-absent; this only changes what is hashed).
 # xargs -r prevents a hang if the tree were ever empty.
 compute_source_hash() {
-  ( cd "${DEFAULTS_SRC}" && find . -path './cache' -prune -o -type f -print0 | sort -z | xargs -0 -r sha256sum ) \
+  ( cd "${DEFAULTS_SRC}" && find . -type f -print0 | sort -z | xargs -0 -r sha256sum ) \
     | sha256sum | awk '{print $1}'
 }
 
@@ -80,9 +87,11 @@ if [[ ! -f "${HOME}/.omp/knowledge.env" && -f "${KENV_SRC}" ]]; then
 fi
 
 # Fast path: already seeded AND source unchanged. Still verify the target is
-# intact — a sentinel without a target (deleted/corrupted) must re-merge, not skip.
+# intact — a sentinel without the local-model cache (the one model artifact
+# that belongs in the user layer; deleted/corrupted volume) must re-merge,
+# not skip.
 if [[ -n "${STORED_HASH}" && "${STORED_HASH}" == "${SOURCE_HASH}" ]]; then
-  if [[ -f "${OMP_AGENT_DIR}/config.yml" ]]; then
+  if [[ -d "${OMP_AGENT_DIR}/cache/tiny-models" ]]; then
     echo "seed-omp-home.sh: volume already seeded, defaults unchanged (hash ${STORED_HASH:0:12}…), skipping"
     exit 0
   fi
@@ -103,6 +112,11 @@ done < <(cd "${DEFAULTS_SRC}" && find . -mindepth 1 -type d -print0 | sort -z)
 # Then files, with explicit per-file skip semantics
 while IFS= read -r -d '' f; do
   rel="${f#./}"
+  # models.yml is workspace-owned (see header): bootstrap seeds .omp/models.yml;
+  # the user layer must not receive model definitions from the image.
+  if [[ "${rel}" == "models.yml" ]]; then
+    continue
+  fi
   if [[ ! -e "${OMP_AGENT_DIR}/${rel}" ]]; then
     mkdir -p "$(dirname "${OMP_AGENT_DIR}/${rel}")"
     cp -p "${DEFAULTS_SRC}/${rel}" "${OMP_AGENT_DIR}/${rel}"

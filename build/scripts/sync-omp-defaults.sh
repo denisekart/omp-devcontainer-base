@@ -11,7 +11,10 @@
 #
 # Contract:
 #   - rsync -a --delete for agents/, skills/, and extensions/ subtrees (safe: no live state).
-#   - Plain copy (no --delete) for top-level config.yml, models.yml, mcp.json.
+#   - Plain copy (no --delete) for top-level config.yml, mcp.json.
+#   - models.yml is workspace-owned (never synced to the user layer); the
+#     config.yml sync applies only to non-model sections — dogfood only;
+#     existing instances unaffected (seed-omp-home.sh never overwrites).
 #   - Never touches ./cache, .seeded-v1, *.db*, sessions/, terminal-sessions/,
 #     blobs/, last-changelog-version.
 #   - Overwrites agents/ and skills/ to match source exactly.
@@ -98,7 +101,7 @@ fi
 
 # Sync top-level files (plain copy, no --delete)
 echo "sync-omp-defaults.sh: syncing top-level config files..."
-for f in config.yml models.yml mcp.json; do
+for f in config.yml mcp.json; do
   if [[ -f "${SRC}/${f}" ]]; then
     if [[ "${MODE}" == "--check" ]]; then
       # Show diff if files differ

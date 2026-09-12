@@ -1,55 +1,62 @@
-# Project-level omp settings
-# Mirrors user-level ~/.omp/agent/config.yml (baked defaults) — keep in sync.
+# Project-level omp settings (model roles, local-model providers, subagent knobs).
+# User-owned: bootstrap writes it only when absent — edit freely; rebuilds and
+# re-bootstrap never overwrite.
 # Arrays REPLACE (not merge) — restate the full list if overriding extensions
 
 stack: generic
 defaultThinkingLevel: "xhigh"
 
-# Model Role Mapping
-#   qwen3.8-27b = primary (agentic reasoning; default/slow/plan)
-#   qwen3.6-35b = worker (35B-A3B MoE; delegated subagent tasks) + advisor (binary thinking, on by default)
-#   qwen3-coder-4b = smol (background/utility tasks)
+# Model Role Mapping — model roles map to the models defined in models.yml
+# (user layer, ~/.omp/agent/models.yml; the workspace .omp/models.yml is a
+# user-owned copy and is NOT consulted for model definitions).
+#   litellm/qwen3.8-27b  primary: agentic reasoning; default/slow/plan; only
+#                          model with thinking effort levels (default xhigh)
+#   litellm/qwen3.6-35b  worker: 35B-A3B MoE; task + advisor; binary thinking
+#                          (on by default, no effort levels); vLLM slot limit 6
+#   litellm/qwen3-coder-4b smol: instruction-only 4B; memory/tiny/background;
+#                          no reasoning effort
 modelRoles:
   default: "litellm/qwen3.8-27b"
   smol: "litellm/qwen3-coder-4b"
   slow: "litellm/qwen3.8-27b"
   plan: "litellm/qwen3.8-27b"
-  task: "litellm/qwen3.6-35b"     # Worker model: strong coder/specialist given detailed instructions
-  memory: "litellm/qwen3-coder-4b" # Used for mnemopi extraction (online fallback)
-  tiny: "litellm/qwen3-coder-4b"   # Used for lightweight background tasks (online fallback)
-  advisor: "litellm/qwen3.6-35b"       # Passive reviewer; binary thinking, on by default (no effort levels)
+  task: "litellm/qwen3.6-35b"
+  memory: "litellm/qwen3-coder-4b"
+  tiny: "litellm/qwen3-coder-4b"
+  advisor: "litellm/qwen3.6-35b"
 
-# Advisor (passive reviewer)
-# A second model reviews the primary transcript as it happens and can inject
-# advice (nits / concerns / blockers) into the session. Runs the qwen3.6 worker
-# (binary thinking — on by default, no effort levels). OFF by default:
+# Advisor (passive reviewer): second model (qwen3.6 worker) reviews the
+# primary transcript and can inject advice. OFF by default; knobs:
 #   per session:    /advisor on          (also: /advisor off | status | dump)
 #   single run:     omp -p --advisor "task"
-#   persistently:   flip advisor.enabled to true
-# Reviewer guidance: add WATCHDOG.md (.omp/ or the user agent dir) for review
-# priorities, or WATCHDOG.yml for a named advisor roster.
+# Reviewer guidance: WATCHDOG.md (.omp/ or the user agent dir) for review
+# priorities, WATCHDOG.yml for a named advisor roster.
 advisor:
   enabled: false
 
-# Retry / Fallback Chains (retry.fallbackChains)
-# Model-oriented keys: every role running qwen3.8-27b (default/slow/plan) falls
-# back to the qwen3.6-35b worker; every role running qwen3-coder-4b
-# (smol/memory/tiny) falls back to the worker too. The offline path for the
-# small online models is the on-device lfm2-1.2b (task-specific providers below).
+# Retry / Fallback Chains (retry.fallbackChains — settings key). Applied on
+# provider errors; model selector = chain key; every role running the keyed
+# model follows the chain. Chains reference catalog models only; the
+# on-device lfm2-1.2b offline backstop is NOT a catalog model — it serves
+# side tasks via the task-specific tiny-worker providers (providers.tinyModel/
+# memoryModel/autoThinkingModel below) and is always available offline. When
+# litellm is down the chains end at the last online link (session still
+# starts; roles degrade); side tasks keep running on-device.
 retry:
   fallbackChains:
     "litellm/qwen3.8-27b":
       - "litellm/qwen3.6-35b"
-    "litellm/qwen3-coder-4b":
-      - "litellm/qwen3.6-35b"
+      - "litellm/qwen3-coder-4b"
+    "litellm/qwen3.6-35b":
+      - "litellm/qwen3-coder-4b"
+    "litellm/qwen3-coder-4b": []
 
 # Local Tiny-Model Providers (Task-specific)
 # Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/local-models.md
-# Side tasks (titles, mnemopi extraction/consolidation, auto-thinking difficulty)
-# run on the baked-in local model lfm2-1.2b — most capable of the models
-# pre-downloaded into the image (gemma-270m, lfm2-350m, lfm2-1.2b) and the
-# fastest warm load (~0.4s). Offline-resilient path for the small online
-# models; set an entry back to "online" to route through the online role model.
+# Task-specific local side tasks (session titles, mnemopi
+# extraction/consolidation, auto-thinking difficulty) run on the ONNX
+# tiny-worker lfm2-1.2b — fully offline, independent of the online models.
+# Set any entry to "online" to route through the role model instead.
 providers:
   tinyModel: "lfm2-1.2b"          # e.g., "gemma-270m" or "lfm2-350m" for faster titles
   memoryModel: "lfm2-1.2b"        # recommended local memory model
@@ -61,7 +68,7 @@ providers:
 # Engine limits: qwen3.8-27b serves --max-num-seqs 2 (big-model slots); the
 # qwen3.6-35b worker serves --max-num-seqs 6 (vLLM queues overflow beyond 6).
 subagents:
-  globalConcurrencyLimit: 15    # Combined limit (2 big + 18 small sessions)
+  globalConcurrencyLimit: 20    # Combined limit (2 big + 18 small sessions)
   maxSubagentDepth: 2           # Prevent unbounded nesting
   forceTopLevelAsync: true      # Background tasks by default
   parallel:

@@ -1,5 +1,11 @@
 # oh-my-pi — Model and Provider Configuration
-# Seeded into ~/.omp/agent/models.yml
+# Single source of truth for provider/model definitions. Seeded into
+# ~/.omp/agent/models.yml on first boot (seed-omp-home.sh never overwrites it
+# once present). The workspace .omp/models.yml is a user-owned copy written
+# by bootstrap only when absent; it is a convenience mirror, NOT consulted
+# for model definitions (omp resolves models from the user layer only) —
+# editing it defines no new models; use it for per-repo experiments and
+# copy working setups into ~/.omp/agent/models.yml to make them live.
 # Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/models.md
 
 providers:
@@ -8,6 +14,10 @@ providers:
     baseUrl: "http://spark.orca-hue.ts.net:4000/v1"
     apiKey: "anything"
     models:
+      # primary/agentic model (roles: default/slow/plan — see config.yml
+      # modelRoles). Only model with selectable thinking effort
+      # (low|medium|xhigh, default xhigh — change per-model here,
+      # per-session via /effort). 210K context.
       - id: "qwen3.8-27b"
         name: "Qwen 3.8 (27B)"
         reasoning: true
@@ -49,6 +59,9 @@ providers:
                 enable_thinking: true
                 preserve_thinking: true
 
+      # MoE worker (roles: task/advisor — see config.yml modelRoles).
+      # Binary thinking only (on/off — no effort levels; on by default).
+      # 105K context. The sensible target for delegated subagents.
       - id: "qwen3.6-35b"
         name: "Qwen 3.6 (35B-A3B) Worker"
         reasoning: true
@@ -82,12 +95,12 @@ providers:
               chat_template_kwargs:
                 enable_thinking: true
                 preserve_thinking: true
-      
-      
-      # --- Qwen3 Coder (4B) Lightweight Model ---
+
+      # Instruction-only small model (roles: smol/memory/tiny — see
+      # config.yml modelRoles). No reasoning effort. 32K context.
+      # Background/utility work.
       # Official recommendations (https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507):
       #   Sampling parameters: temp 0.7, top_p 0.80, top_k 20, min_p 0.0, presence_penalty 1.5
-      #   Instruct-only (non-thinking model; reasoning effort not supported)
       - id: "qwen3-coder-4b"
         name: "Qwen3 Coder (4B)"
         reasoning: false
@@ -105,3 +118,7 @@ providers:
             repetition_penalty: 1.0
             chat_template_kwargs:
               enable_thinking: false
+
+# retry.fallbackChains live in config.yml (same layering): the settings
+# store is built only from config.yml files and this file is parsed with a
+# providers-only schema — a retry key here has no effect.
