@@ -1,124 +1,72 @@
 # oh-my-pi — Model and Provider Configuration
-# Single source of truth for provider/model definitions. Seeded into
-# ~/.omp/agent/models.yml on first boot (seed-omp-home.sh never overwrites it
-# once present). The workspace .omp/models.yml is a user-owned copy written
-# by bootstrap only when absent; it is a convenience mirror, NOT consulted
-# for model definitions (omp resolves models from the user layer only) —
-# editing it defines no new models; use it for per-repo experiments and
-# copy working setups into ~/.omp/agent/models.yml to make them live.
-# Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/models.md
 
 providers:
   litellm:
     api: openai-completions
     baseUrl: "http://spark.orca-hue.ts.net:4000/v1"
-    apiKey: "anything"
+    apiKey: "sk-anything"
+
     models:
-      # primary/agentic model (roles: default/slow/plan — see config.yml
-      # modelRoles). Only model with selectable thinking effort
-      # (low|medium|xhigh, default xhigh — change per-model here,
-      # per-session via /effort). 210K context.
-      - id: "qwen3.8-27b"
-        name: "Qwen 3.8 (27B)"
+      - id: "qwen3.8-flash-next"
+        name: "Qwen3.8 Flash Next (DGX Spark)"
+
         reasoning: true
-        input: [ "text", "image" ]
-        contextWindow: 210000
+        input: ["text", "image"]
+
+        # Matches your vLLM max_model_len
+        contextWindow: 262144
+
+        # Conservative value. Increase later if you raise max_tokens server-side.
         maxTokens: 16384
+
         thinking:
           mode: effort
-          efforts: [ "low", "medium", "xhigh" ]
+          efforts:
+            - "low"
+            - "medium"
+            - "xhigh"
           defaultLevel: xhigh
+
         compat:
           thinkingFormat: "qwen-chat-template"
+
           qwenTemplateReasoningEffort: true
           supportsReasoningEffort: true
+
           reasoningEffortMap:
             low: "low"
             medium: "medium"
             xhigh: "xhigh"
+
           reasoningContentField: "reasoning_content"
+
           supportsToolChoice: true
           supportsForcedToolChoice: true
+          requiresReasoningContentForToolCalls: false
+
+          # Qwen3.8-Flash-Next recommended non-thinking settings
           extraBody:
             temperature: 0.7
             top_p: 0.80
             top_k: 20
+            min_p: 0.0
             presence_penalty: 1.5
             repetition_penalty: 1.0
+
             chat_template_kwargs:
               enable_thinking: false
               preserve_thinking: true
+
+          # Qwen3.8-Flash-Next recommended thinking settings
           whenThinking:
             extraBody:
               temperature: 1.0
               top_p: 0.95
               top_k: 20
-              presence_penalty: 0.0
-              repetition_penalty: 1.0
-              chat_template_kwargs:
-                enable_thinking: true
-                preserve_thinking: true
-
-      # MoE worker (roles: task/advisor — see config.yml modelRoles).
-      # Binary thinking only (on/off — no effort levels; on by default).
-      # 105K context. The sensible target for delegated subagents.
-      - id: "qwen3.6-35b"
-        name: "Qwen 3.6 (35B-A3B) Worker"
-        reasoning: true
-        input: [ "text", "image" ]
-        contextWindow: 105000
-        maxTokens: 16384
-        compat:
-          supportsReasoningEffort: false
-          thinkingFormat: "qwen-chat-template"
-          requiresReasoningContentForToolCalls: false
-          reasoningContentField: "reasoning_content"
-          extraBody:
-            # Non-thinking mode (General) — official recommendation
-            temperature: 0.7
-            top_p: 0.80
-            top_k: 20
-            min_p: 0.0
-            presence_penalty: 1.5
-            repetition_penalty: 1.0
-            chat_template_kwargs:
-              enable_thinking: false
-          whenThinking:
-            extraBody:
-              # Thinking mode (Coding/precise tasks) — official recommendation
-              temperature: 0.6
-              top_p: 0.95
-              top_k: 20
               min_p: 0.0
               presence_penalty: 0.0
               repetition_penalty: 1.0
+
               chat_template_kwargs:
                 enable_thinking: true
                 preserve_thinking: true
-
-      # Instruction-only small model (roles: smol/memory/tiny — see
-      # config.yml modelRoles). No reasoning effort. 32K context.
-      # Background/utility work.
-      # Official recommendations (https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507):
-      #   Sampling parameters: temp 0.7, top_p 0.80, top_k 20, min_p 0.0, presence_penalty 1.5
-      - id: "qwen3-coder-4b"
-        name: "Qwen3 Coder (4B)"
-        reasoning: false
-        input: ["text", "image"]
-        contextWindow: 32768
-        maxTokens: 8192
-        compat:
-          supportsReasoningEffort: false
-          extraBody:
-            temperature: 0.7
-            top_p: 0.80
-            top_k: 20
-            min_p: 0.0
-            presence_penalty: 1.5
-            repetition_penalty: 1.0
-            chat_template_kwargs:
-              enable_thinking: false
-
-# retry.fallbackChains live in config.yml (same layering): the settings
-# store is built only from config.yml files and this file is parsed with a
-# providers-only schema — a retry key here has no effect.

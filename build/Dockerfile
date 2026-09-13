@@ -5,8 +5,6 @@ ENV DOTNET_ROOT=/usr/share/dotnet
 ENV BUN_INSTALL=/usr/local
 ENV PI_TINY_DEVICE=cpu
 ENV PI_TINY_DTYPE=q4
-ENV OPENAI_API_KEY=anything
-ENV LITELLM_API_KEY=anything
 ENV PATH=$BUN_INSTALL/bin:$DOTNET_ROOT:/home/vscode/.dotnet/tools:/home/vscode/.local/bin:/usr/local/bin:$PATH
 
 # Install core packages and tooling
@@ -376,8 +374,6 @@ RUN mkdir -p ~/.zsh_history_vol \
     && printf '%s\n' 'export DOTNET_ROOT=/usr/share/dotnet' >> ~/.zshrc \
     && printf '%s\n' 'export PI_TINY_DEVICE=cpu' >> ~/.zshrc \
     && printf '%s\n' 'export PI_TINY_DTYPE=q4' >> ~/.zshrc \
-    && printf '%s\n' 'export OPENAI_API_KEY=anything' >> ~/.zshrc \
-    && printf '%s\n' 'export LITELLM_API_KEY=anything' >> ~/.zshrc \
     && printf '%s\n' 'export PATH=$BUN_INSTALL/bin:$DOTNET_ROOT:/home/vscode/.dotnet/tools:/home/vscode/.local/bin:/usr/local/bin:$PATH' >> ~/.zshrc \
     && printf '%s\n' '' >> ~/.zshrc \
     && printf '%s\n' '# Zephyr SDK (LLVM) — mirrors /etc/profile.d/zephyr.sh (zsh is not a login shell)' >> ~/.zshrc \
