@@ -209,8 +209,9 @@ stack: ${STACK}
 defaultThinkingLevel: \"medium\"
 
 # Model Role Mapping — model roles map to the models defined in the workspace
-# .omp/models.yml; omp merges it OVER the user layer (~/.omp/agent/models.yml)
-# at startup — the image never seeds the user-layer file (seed-omp-home.sh excludes models.yml).
+# .omp/models.yml; omp reads model definitions ONLY from
+# ~/.omp/agent/models.yml, which seed-omp-home.sh maintains as a symlink to
+# this workspace's .omp/models.yml.
 #   litellm/qwen3.8-27b  primary: agentic reasoning; default/slow/plan; only
 #                          model with thinking effort levels (default xhigh)
 #   litellm/qwen3.6-35b  worker: 35B-A3B MoE; task + advisor; binary thinking
@@ -283,9 +284,11 @@ task:
 write_if_absent ".omp/config.yml" "$OMP_CONFIG"
 
 # --- .omp/models.yml (workspace-level models configuration) ---
-# Image defaults first (superset: per-model comments);
-# the user-layer copy is only a fallback for devcontainers where the image
-# lacks the baked path. User-owned once written: never overwritten.
+# Image defaults first (superset: per-model comments); the user-layer path is
+# normally the symlink seed-omp-home.sh maintains (not a byte source) and only
+# acts as a fallback for devcontainers where the image lacks the baked file.
+# User-owned once written: never overwritten. seed-omp-home.sh (postCreate/
+# postStart) symlinks ~/.omp/agent/models.yml AT this file so omp reads it.
 DEFAULT_MODELS="/usr/local/share/omp-defaults/agent/models.yml"
 USER_MODELS="${HOME}/.omp/agent/models.yml"
 if [[ -e ".omp/models.yml" ]]; then

@@ -1,14 +1,13 @@
 # omp-devcontainer-base default configuration
 # Baked at /usr/local/share/omp-defaults/agent/config.yml.
-# Model sections (defaultProvider/defaultModel/defaultSmallModel/
-# defaultThinkingLevel, modelRoles, retry, providers tiny-models) define the
-# WORKSPACE .omp/config.yml that bootstrap seeds — they are never copied into
-# ~/.omp/agent/config.yml (seed-omp-home.sh skips them). All other sections
-# below seed the user layer and are never overwritten once present.
+# Model-selector settings (default provider/model/small-model selectors, role
+# mapping, retry chains) are WORKSPACE-only: bootstrap.sh seeds
+# them into the project .omp/config.yml; they are NOT part of this user-layer
+# file (seed-omp-home.sh strips the retired fleet values from existing user
+# layers). Model definitions live ONLY in the workspace .omp/models.yml, which
+# seed-omp-home.sh exposes via the ~/.omp/agent/models.yml pointer. All other
+# sections below seed the user layer and are never overwritten once present.
 
-defaultProvider: "litellm"
-defaultModel: "litellm/qwen3.8-27b"
-defaultSmallModel: "litellm/qwen3-coder-4b"
 defaultThinkingLevel: "medium"
 
 # LSP Configuration
@@ -61,25 +60,6 @@ extensions: []
 # Plan files written under .omp/plans/ are a project convention (AGENTS.md). Do not
 # re-add a `plan:` block.
 
-# Model Role Mapping — model roles map to the models defined in the workspace
-# .omp/models.yml; omp merges it OVER the user layer (~/.omp/agent/models.yml)
-# at startup — the image never seeds the user-layer file (seed-omp-home.sh excludes models.yml).
-#   litellm/qwen3.8-27b  primary: agentic reasoning; default/slow/plan; only
-#                          model with thinking effort levels (default xhigh)
-#   litellm/qwen3.6-35b  worker: 35B-A3B MoE; task + advisor; binary thinking
-#                          (on by default, no effort levels); vLLM slot limit 6
-#   litellm/qwen3-coder-4b smol: instruction-only 4B; memory/tiny/background;
-#                          no reasoning effort
-modelRoles:
-  default: "litellm/qwen3.8-27b"
-  smol: "litellm/qwen3-coder-4b"
-  slow: "litellm/qwen3.8-27b"
-  plan: "litellm/qwen3.8-27b"
-  task: "litellm/qwen3.6-35b"
-  memory: "litellm/qwen3-coder-4b"
-  tiny: "litellm/qwen3-coder-4b"
-  advisor: "litellm/qwen3.6-35b"
-
 # Advisor (passive reviewer): second model (qwen3.6 worker) reviews the
 # primary transcript and can inject advice. OFF by default; knobs:
 #   per session:    /advisor on          (also: /advisor off | status | dump)
@@ -88,23 +68,6 @@ modelRoles:
 # priorities, WATCHDOG.yml for a named advisor roster.
 advisor:
   enabled: false
-
-# Retry / Fallback Chains (retry.fallbackChains — settings key). Applied on
-# provider errors; model selector = chain key; every role running the keyed
-# model follows the chain. Chains reference catalog models only; the
-# on-device lfm2-1.2b offline backstop is NOT a catalog model — it serves
-# side tasks via the task-specific tiny-worker providers (providers.tinyModel/
-# memoryModel/autoThinkingModel below) and is always available offline. When
-# litellm is down the chains end at the last online link (session still
-# starts; roles degrade); side tasks keep running on-device.
-retry:
-  fallbackChains:
-    "litellm/qwen3.8-27b":
-      - "litellm/qwen3.6-35b"
-      - "litellm/qwen3-coder-4b"
-    "litellm/qwen3.6-35b":
-      - "litellm/qwen3-coder-4b"
-    "litellm/qwen3-coder-4b": []
 
 # Local Tiny-Model Providers (Task-specific)
 # Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/local-models.md

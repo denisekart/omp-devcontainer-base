@@ -8,11 +8,13 @@ defaultThinkingLevel: "medium"
 
 # Model Role Mapping — this workspace overrides ALL model roles to
 # litellm/qwen3.8-flash-next (single local model; no fleet). Models are defined
-# in the workspace .omp/models.yml — omp merges it OVER the user layer
-# (~/.omp/agent/models.yml) at startup; the image never seeds that user-layer
-# file (seed-omp-home.sh excludes models.yml). The fleet-ideal role mapping
-# (27b primary / 35b worker / coder-4b smol) lives in
-# build/library/omp-defaults/agent/config.yml.
+# in the workspace .omp/models.yml — omp reads model definitions ONLY from
+# ~/.omp/agent/models.yml, which seed-omp-home.sh maintains as a symlink to
+# this workspace's .omp/models.yml (the user layer stores no model bytes).
+# The explicit providers.<id>.baseUrl there outranks LITELLM_BASE_URL and the
+# built-in http://localhost:4000/v1 default. The fleet-ideal role mapping
+# (27b primary / 35b worker / coder-4b smol) lives in the bootstrap.sh
+# OMP_CONFIG template (build/scripts/bootstrap.sh).
 modelRoles:
   default: "litellm/qwen3.8-flash-next"
   slow: "litellm/qwen3.8-flash-next"

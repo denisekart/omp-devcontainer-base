@@ -6,7 +6,7 @@ The image seeds a default `models.yml` whose `baseUrl` is **the image author's**
 
 You **MUST** point `models.yml` at your own OpenAI-compatible endpoint (LiteLLM or any OpenAI-compatible gateway):
 
-- Edit the user-level `~/.omp/agent/models.yml`, or (recommended) the repository-level `.omp/models.yml` so the configuration is committed and shared with your team.
+- Edit the repository-level `.omp/models.yml` (recommended — it is committed and shared with your team). omp reads model config **only** from `~/.omp/agent/models.yml`, and `seed-omp-home.sh` (postCreate/postStart) keeps that path as a pointer (symlink) to the current workspace's `.omp/models.yml` — so editing the workspace file edits exactly what omp reads. To use a purely user-level config instead, replace `~/.omp/agent/models.yml` with a real file of your own; seeding respects it and stops pointing at the workspace file.
 - For LLM servers running on the host machine, use `http://host.docker.internal:<port>/v1` as the `baseUrl` — inside the container, `localhost` refers to the container itself.
 
 This is the single most common onboarding failure; it is also covered in [getting-started.md](getting-started.md) (section 5) and [troubleshooting.md](troubleshooting.md).
@@ -21,7 +21,7 @@ This is the single most common onboarding failure; it is also covered in [gettin
 
 The base image seeds default configurations into your user home directory:
 
--   **`~/.omp/agent/models.yml`**: Contains provider definitions. By default, it connects to LiteLLM serving Qwen models with reasoning controls.
+-   **`~/.omp/agent/models.yml`**: Pointer (symlink) maintained by `seed-omp-home.sh` to the workspace `.omp/models.yml` (see section 2); its target contains the provider definitions. By default, it connects to LiteLLM serving Qwen models with reasoning controls.
     ```yaml
     providers:
       litellm:
@@ -321,7 +321,7 @@ To maintain consistency across team members or ensure your model setup lives dir
    ```
 
 4. **Verify Discovery**:
-   When launching `omp`, the agent automatically merges `.omp/models.yml` and `.omp/config.yml` over user-level configurations.
+   omp reads model definitions **only** from `~/.omp/agent/models.yml` — maintained by `seed-omp-home.sh` as a pointer to this workspace's `.omp/models.yml` — and merges `.omp/config.yml` over user-level settings. An explicit `providers.<id>.baseUrl` in that file outranks `LITELLM_BASE_URL` and the built-in `http://localhost:4000/v1` default.
 
 ---
 
