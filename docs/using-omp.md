@@ -21,9 +21,9 @@ Headless: `omp -p --plan-yolo` auto-approves and implements.
 
 ## Delegation & the Agent Fleet
 
-The `task` tool spawns subagents that work in parallel: `task(agent="backend-expert", task="...")`. Seeded concurrency in `~/.omp/agent/config.yml`: `globalConcurrencyLimit: 20`, `parallel.concurrency: 4`, `maxSubagentDepth: 2`, `forceTopLevelAsync: true`.
+The `task` tool spawns subagents that work in parallel: `task(agent="backend-expert", task="...")`. Seeded concurrency in `~/.omp/agent/config.yml`: `globalConcurrencyLimit: 15`, `parallel.concurrency: 2`, `maxSubagentDepth: 2`, `forceTopLevelAsync: true`.
 
-Six custom agents are baked into the image (`build/library/omp-defaults/agent/agents/`):
+Seven custom agents are baked into the image (`build/library/omp-defaults/agent/agents/`):
 
 | Agent | Role |
 |-------|------|
@@ -33,10 +33,11 @@ Six custom agents are baked into the image (`build/library/omp-defaults/agent/ag
 | `quality-assurance` | Specialist for xUnit, Playwright .NET, and Aspire testing |
 | `documentation-specialist` | Specialist for technical documentation, diagrams, and CHANGELOG |
 | `oracle` | Fleet's architectural reasoning engine for complex decisions and debugging |
+| `zephyr-expert` | Specialist for Zephyr RTOS, embedded C/C++, and ZMK split-keyboard firmware (keymaps, boards, modules, flashing) |
 
 Plus the built-in `reviewer` agent (project override of the bundled reviewer with `<project-conventions>` appended).
 
-Built-in task agents shipped in the omp runtime: `task` (generic worker), `scout` (read-only codebase research), `reviewer` (bundled, overridden by project copy), `security-reviewer`, `sonic`. The built-in `librarian`, `designer`, and `init` arrive with the next omp auto-update (the image pulls `@latest` at postStart). Plan mode is native — no custom agent.
+Built-in task agents shipped in the omp runtime: `task` (generic worker), `scout` (read-only codebase research), `reviewer` (bundled, overridden by project copy), `security-reviewer`, `sonic`. omp 18.1.20 ships no general-purpose research agent or UI-design agent (both were removed upstream in the 18.1.x line) — research routes to `scout` (with `web_search` for external docs), UI polish to `frontend-expert`. Plan mode is native — no custom agent.
 
 ## Memory (Hindsight)
 
@@ -73,7 +74,7 @@ Skills do not need manual invocation: they load automatically when their descrip
 
 ## Baked Skills
 
-All 22 skills are baked into the image (`build/library/omp-defaults/agent/skills/`):
+All 25 skills are baked into the image (`build/library/omp-defaults/agent/skills/`):
 
 **Workflow**
 
@@ -96,7 +97,6 @@ All 22 skills are baked into the image (`build/library/omp-defaults/agent/skills
 | `caching-strategies` | Output caching, memory caching, distributed caching with Redis, and HybridCache |
 | `concurrency-patterns` | Choosing the right concurrency abstraction: async/await, Channels, Parallel.ForEachAsync, synchronization primitives |
 | `dotnet-architecture-patterns` | Organizing APIs at scale: vertical slices, request pipelines, caching, error handling, idempotency, outbox, graceful shutdown |
-| `background-services` | Hosted services, background jobs, outbox patterns, and graceful shutdown |
 | `performance-analyst` | .NET performance tuning, allocation reduction, async optimization, type design, database access, file I/O streaming |
 | `test-quality` | Measuring and improving test effectiveness: coverage, CRAP score analysis, mutation testing, flaky management |
 | `security-auditor` | ASP.NET Core security, authentication patterns, secrets management, OWASP mitigation |
@@ -107,6 +107,13 @@ All 22 skills are baked into the image (`build/library/omp-defaults/agent/skills
 |-------|-------------|
 | `svelte5` | Svelte 5 runes rules, doc-lookup workflow, design language enforcement, shadcn usage (formerly `svelte-code-writer`, `svelte-core-bestpractices`, `frontend-expert`, `ui-ux-design-language`) |
 | `playwright-testing` | End-to-end (E2E) testing with Playwright for .NET under Aspire orchestration |
+
+**Embedded**
+
+| Skill | Description |
+|-------|-------------|
+| `embedded-c-cpp` | Embedded C/C++ idioms, memory model, and Zephyr RTOS patterns (Kconfig, devicetree, interrupts, ISR safety) |
+| `zmk-zephyr` | ZMK split-keyboard firmware — keymaps (devicetree overlays), boards, shields, modules, west/zmk builds, and flashing |
 
 **Quality & Analysis**
 
@@ -121,6 +128,8 @@ All 22 skills are baked into the image (`build/library/omp-defaults/agent/skills
 |-------|-------------|
 | `csharp-scripts` | Writing and running single-file C# programs via top-level statements and `dotnet <file>.cs` |
 | `ci-cd-patterns` | GitHub Actions, project building, testing, and deployment workflows for .NET and SvelteKit |
+| `knowledge-base` | Maintain and query the per-workspace pi-knowledge RAG index (`knowledge_*` tools); env switches, Spark vs local embedding modes |
+| `qwen-tuning` | Qwen3.8 effort levels, when to drop `xhigh`→`medium` in agent loops, Qwen3.6 A3B binary thinking, sampling expectations |
 
 ## Models & Roles
 
@@ -132,4 +141,8 @@ MCP servers connect the agent to external tools. Two layers exist — user-level
 
 ## Plugins
 
-Four plugins are installed by default at first boot: `pi-loop-police` (infinite-loop detection), `pi-lens` (real-time LSP/linter feedback), `context-mode` (context-window savings via MCP), and `pi-simplify` (output simplification). Adoption decisions and the deferred/considered lists: [plugins.md](plugins.md).
+Five plugins are installed by default at first boot: `pi-loop-police` (infinite-loop detection), `pi-lens` (real-time LSP/linter feedback), `context-mode` (context-window savings via MCP), `pi-simplify` (output simplification), and `pi-knowledge@0.10.0` (local-first RAG knowledge base — the `knowledge_*` tools). Adoption decisions and the deferred/considered lists: [plugins.md](plugins.md).
+
+## Harness Self-Improvement
+
+The image feeds field experience back into itself via a two-tier RSI loop — `repo-doctor` repairs each repo's `.omp/` layer; `harness-retro` plus the `harness-rsi` extension export findings to this base repo: [harness-self-improvement.md](harness-self-improvement.md).

@@ -23,10 +23,10 @@ Project-level overrides can be placed in .omp/skills/ and .omp/agents/.
 
 ## Orchestration (main agent = orchestrator, not worker)
 
-- The main agent plans, delegates, and verifies. It does NOT do grunt work itself: no bulk reads/greps, no file edits, no long-running commands — it coordinates.
+- The main agent plans, delegates, and verifies. It may apply trivial single-file edits and single-command checks inline, but delegates anything multi-file or multi-step — spawning an isolated subagent for a one-line edit wastes a second inference pass.
 - Delegate independent work to **isolated** subagents via the `task` tool; `task` is fire-and-forget (returns a job id managed via `hub jobs`/`hub wait`); independent items are automatically backgrounded (`forceTopLevelAsync: true`).
 - Each subagent runs in its own context (and, where the filesystem allows, an isolated working-tree clone) — results are summarized back, so the orchestrator's context stays lean.
-- Route by work type: external/docs/API research → `librarian`, codebase research → `scout`, code review → `reviewer` (project override), .NET → `backend-expert`, frontend → `frontend-expert`, Aspire → `dotnet-aspire`, tests/QA → `quality-assurance`, docs → `documentation-specialist`, UI polish → `designer`, hard problems/architecture → `oracle`.
+- Route by work type: research (incl. external/docs/API) → `scout` + `web_search`, codebase research → `scout`, code review → `reviewer` (project override), .NET → `backend-expert`, frontend → `frontend-expert`, Aspire → `dotnet-aspire`, tests/QA → `quality-assurance`, docs → `documentation-specialist`, UI polish → `frontend-expert`, hard problems/architecture → `oracle`.
 
 ## Knowledge base
 
@@ -42,3 +42,11 @@ Project-level overrides can be placed in .omp/skills/ and .omp/agents/.
 ## Scaffolding
 
 - Run `/scaffold` to generate the recommended project structure for the current stack.
+
+## Self-improvement
+
+- If this file or any `.omp/` file references a tool or agent that is not available in this image, delegate one repair pass: `task(agent="repo-doctor", task="audit and repair this repo's .omp/ layer and AGENTS.md")`. Repeat whenever `sync-omp-defaults.sh` or an image update lands.
+- To collect this instance's harness experience: `task(agent="harness-retro", task="7-day retro")` — run after significant field sessions or roughly weekly; it prints a pasteable findings document. `/rsi-export [days]` gives the raw telemetry skeleton without an agent run.
+- Intake: when a HARNESS FINDINGS document is pasted, delegate it verbatim to `task(agent="harness-retro", ...)` — it checks the ledger, implements valid `[upstream]` proposals in `build/`, and records dispositions. `/rsi-intake <file>` runs the mechanical validate/dedup pass first.
+- All skill changes update existing `SKILL.md` files in place; new skills only when ≥2 distinct findings cannot be mapped into any existing skill.
+- Full loop guide: `docs/harness-self-improvement.md`.

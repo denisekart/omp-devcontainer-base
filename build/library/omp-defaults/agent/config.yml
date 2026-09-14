@@ -9,7 +9,7 @@
 defaultProvider: "litellm"
 defaultModel: "litellm/qwen3.8-27b"
 defaultSmallModel: "litellm/qwen3-coder-4b"
-defaultThinkingLevel: "xhigh"
+defaultThinkingLevel: "medium"
 
 # LSP Configuration
 # Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/lsp-config.md
@@ -61,9 +61,9 @@ extensions: []
 # Plan files written under .omp/plans/ are a project convention (AGENTS.md). Do not
 # re-add a `plan:` block.
 
-# Model Role Mapping — model roles map to the models defined in models.yml
-# (user layer, ~/.omp/agent/models.yml; the workspace .omp/models.yml is a
-# user-owned copy and is NOT consulted for model definitions).
+# Model Role Mapping — model roles map to the models defined in the workspace
+# .omp/models.yml; omp merges it OVER the user layer (~/.omp/agent/models.yml)
+# at startup — the image never seeds the user-layer file (seed-omp-home.sh excludes models.yml).
 #   litellm/qwen3.8-27b  primary: agentic reasoning; default/slow/plan; only
 #                          model with thinking effort levels (default xhigh)
 #   litellm/qwen3.6-35b  worker: 35B-A3B MoE; task + advisor; binary thinking

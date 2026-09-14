@@ -2,19 +2,22 @@
   "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
   "mcpServers": {
     "git": {
-      "command": "mcp-server-git"
+      "command": "mcp-server-git",
+      "enabled": false
     },
     "fetch": {
       "command": "mcp-server-fetch"
     },
     "time": {
-      "command": "mcp-server-time"
+      "command": "mcp-server-time",
+      "enabled": false
     },
     "docker": {
       "command": "mcp-server-docker"
     },
     "puppeteer": {
       "command": "mcp-server-puppeteer",
+      "enabled": false,
       "env": {
         "PUPPETEER_LAUNCH_OPTIONS": "{\"headless\": true}",
         "ALLOW_DANGEROUS": "true",

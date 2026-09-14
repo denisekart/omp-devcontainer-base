@@ -28,6 +28,7 @@ Full walkthrough: [docs/getting-started.md](docs/getting-started.md)
 | [docs/models.md](docs/models.md) | Model configuration, roles, local tiny models |
 | [docs/mcp.md](docs/mcp.md) | MCP reference + bundled servers |
 | [docs/plugins.md](docs/plugins.md) | Plugin adoption decisions |
+| [docs/harness-self-improvement.md](docs/harness-self-improvement.md) | The RSI loop: repo-doctor, harness-retro, findings export/import, ledger, releases |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Symptom → fix |
 | [docs/architecture.md](docs/architecture.md) | Internals & change flow — for maintainers of this image |
 

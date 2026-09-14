@@ -1,11 +1,10 @@
 # oh-my-pi — Model and Provider Configuration
-# Single source of truth for provider/model definitions. Seeded into
-# ~/.omp/agent/models.yml on first boot (seed-omp-home.sh never overwrites it
-# once present). The workspace .omp/models.yml is a user-owned copy written
-# by bootstrap only when absent; it is a convenience mirror, NOT consulted
-# for model definitions (omp resolves models from the user layer only) —
-# editing it defines no new models; use it for per-repo experiments and
-# copy working setups into ~/.omp/agent/models.yml to make them live.
+# Image-default template for the WORKSPACE layer: bootstrap.sh copies this file
+# to the repo's .omp/models.yml when absent, and that workspace copy is where
+# model definitions live — omp merges .omp/models.yml OVER the user layer at
+# startup (docs/models.md). This file is intentionally EXCLUDED from seeding
+# into ~/.omp/agent/models.yml (see seed-omp-home.sh header), so the user-layer
+# path only exists if you create it yourself.
 # Reference: https://github.com/can1357/oh-my-pi/blob/main/docs/models.md
 
 providers:
