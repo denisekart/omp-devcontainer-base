@@ -326,6 +326,17 @@ USER vscode
 # User-level tools
 RUN dotnet tool install -g dotnet-ef
 RUN dotnet tool install -g Aspire.Cli --prerelease
+# csharp-ls (razzmatazz/csharp-language-server, Roslyn-based) — the C# LSP
+# server for BOTH consumers on this image, installed UNPINNED (latest over
+# reproducible, matching the plugin convention):
+#   - omp native: lsp.servers.csharp.command "csharp-ls" (baked
+#     omp-defaults/agent/config.yml) resolves via PATH incl. ~/.dotnet/tools.
+#   - pi-lens: candidates ~/.pi-lens/bin/csharp-ls → ~/.dotnet/tools/csharp-ls
+#     → PATH. NOTHING may ever be installed into ~/.pi-lens/bin for csharp —
+#     it would shadow this single global tool with a divergent copy.
+# Freshness comes from image rebuilds only: the tool lives in the image, not
+# the volume, and bootstrap.sh runs per workspace (a `dotnet tool update`
+# there would hammer NuGet on every session).
 RUN dotnet tool install -g csharp-ls
 RUN uv tool install python-lsp-server
 RUN uv tool install mcp-server-docker

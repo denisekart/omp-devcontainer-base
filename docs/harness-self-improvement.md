@@ -17,12 +17,12 @@ flowchart LR
 
 | Route | Command | What you get |
 |-------|---------|--------------|
-| Full retro | `task(agent="harness-retro", task="7-day retro")` | Classified findings, applied `[repo-local]` fixes, the finished document |
-| Raw skeleton | `/rsi-export [days]` (default 7) | Telemetry + fingerprint tables pre-filled; `## Findings` / `## Proposals [upstream]` empty for a human/agent to fill |
+| Full retro | `task(agent="harness-retro", task="retro")` | Classified findings, applied `[repo-local]` fixes, the finished document |
+| Raw skeleton | `/rsi-export [days]` (default: full history) | Telemetry + fingerprint tables pre-filled, `## Findings` pre-filled from auto-derived signals (thinking-level changes, loop-police blocks, dead-reference failures, read-guard friction), plus a `covered:` line with the aggregated span; re-exporting the same day preserves human-filled `## Findings` / `## Proposals [upstream]` bodies and refreshes only telemetry |
 
 | Artifact | Path | Contents |
 | ---------- | ------ | ---------- |
-| Telemetry report | `~/.omp/harness/report-<date>.json` | Per-workspace session/tool-call/failure counts, per-MCP-server `mcpUsage` (calls + lastSeen), fingerprint (omp version, host, plugins) |
+| Telemetry report | `~/.omp/harness/report-<date>.json` | Per-workspace session/tool-call/failure counts, per-MCP-server `mcpUsage` (calls + lastSeen), fingerprint (omp version, host, plugins), and the `covered` span (oldest/newest transcript aggregated) |
 | Findings document | `~/.omp/harness/findings-<date>.md` | The portable document |
 | Ledger | `~/.omp/harness/ledger.json` | Proposal history (base repo only, in practice) |
 
@@ -53,7 +53,7 @@ Every signal is scoped before it becomes a fix:
 
 | Scope | Fix belongs to | Examples |
 |-------|----------------|----------|
-| `[upstream]` | the image (`build/library/omp-defaults/`, `build/scripts/`) | model/thinking defaults, baked skills and agents, MCP defaults, the harness-rsi extension |
+| `[upstream]` | the image (`build/library/omp-defaults/`, `build/scripts/`) | model/thinking defaults, baked skills and agents, MCP defaults, the harness-rsi extension — each recorded as one `build/<path>: <gist>` proposal line |
 | `[repo-local]` | this repo's `.omp/` layer | stack-specific MCP list, project skills, project model overrides |
 
 Scope test: *would this improve every instance of the image?* A signal seen in only one workspace of many is usually `[repo-local]`.

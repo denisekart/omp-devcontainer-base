@@ -172,6 +172,7 @@ Project-level overrides can be placed in .omp/skills/ and .omp/agents/.
 - **Memory**: Use the \`recall\` tool to check for prior context, and \`retain\` to save new project-wide learnings (\`reflect\` for synthesized answers across many memories).
 - **Handoff**: Use \`/continue\` to save state and resume in a fresh session when context becomes too heavy.
 - **Plan Mode**: Use the native \`--plan\` flag (or \`Alt+Shift+P\` in-session). The agent submits plans via the \`xd://propose\` approval dialog; approved plan files live in \`.omp/plans/\`. The \`plan-guidance\` skill encodes the plan-file contract.
+- **HTTP**: NEVER inline curl/wget/fetch in bash; use the \`fetch\` MCP tool or \`ctx_fetch_and_index\` (the bash guard blocks inline HTTP).
 
 ## Orchestration (main agent = orchestrator, not worker)
 - The main agent plans, delegates, and verifies. It may apply trivial single-file edits and single-command checks inline, but delegates anything multi-file or multi-step — spawning an isolated subagent for a one-line edit wastes a second inference pass.

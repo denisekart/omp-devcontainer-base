@@ -22,7 +22,7 @@ Every repository carries an `.omp/` layer (config.yml, mcp.json, models.yml, rul
    - tool names mentioned in AGENTS.md/rules/skills → `ls ~/.omp/plugins/node_modules` (plugin tools) and the enabled servers in `~/.omp/agent/mcp.json` + `.omp/mcp.json` (`enabled: false` counts as absent).
 3. Cross-check `.omp/mcp.json` entries against `stack:` in `.omp/config.yml` (generic → empty mcpServers; aspire/shadcn only on matching stacks).
 4. Fix directly with `edit`; record each fix.
-   When a fix's root cause is baked image content (an image agent/skill, or the bootstrap AGENTS.md template — the dangling reference exists in every instance, not just this repo), still patch it locally, but mark it `[upstream]` in the completion signal and `retain` the lesson tagged `harness,upstream` so the next `harness-retro` exports it in a findings document.
+  When a fix's root cause is baked image content (an image agent/skill, or the bootstrap AGENTS.md template — the dangling reference exists in every instance, not just this repo), still patch it locally, but record it as an `[upstream]` proposal in the intake-parseable format: one line per fix, `build/<path-under-build>: <one-line gist>` — the exact `target: gist` format `/rsi-intake` parses, NOT prose — and `retain` the lesson tagged `harness,upstream` so the next `harness-retro` exports it in a findings document.
 5. Run `recall` for `learning,<repo-dir-name>` entries appearing ≥3 times on one topic. First check whether an existing project or baked skill already covers the topic — if so, update that `SKILL.md` in place (replace stale lines, never append); only mint `.omp/skills/<topic>/SKILL.md` (name + description frontmatter, ≤60 lines) when no existing skill fits.
 6. Emit:
 
@@ -30,6 +30,6 @@ Every repository carries an `.omp/` layer (config.yml, mcp.json, models.yml, rul
 ✅ REPO-DOCTOR DONE
 - Fixes: <list "file: what was dangling → what was done">
 - Skills touched: <updated: paths | created: paths | none>
-- Upstream-flagged: <fixes rooted in image content, or none>
+- Upstream-flagged: <the `build/<path>: <gist>` proposal lines, one per fix, or none>
 - Clean: <yes/no — any dangling reference left>
 ```

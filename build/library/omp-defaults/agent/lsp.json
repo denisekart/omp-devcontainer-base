@@ -1,0 +1,7 @@
+{
+  "csharp": {
+    "command": "csharp-ls",
+    "fileTypes": [".cs", ".csx"],
+    "rootMarkers": ["*.sln", "*.csproj", ".git"]
+  }
+}

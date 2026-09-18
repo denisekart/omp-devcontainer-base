@@ -98,9 +98,11 @@ function walkJsonl(dir: string, recursive: boolean): string[] {
 interface TranscriptLine {
   type?: string;
   cwd?: string;
+  /** Present on `thinking_level_change` records. */
+  thinkingLevel?: string;
   message?: {
     role?: string;
-    content?: { type?: string; name?: string }[];
+    content?: { type?: string; name?: string; text?: string }[];
     isError?: boolean;
     toolName?: string;
   };
@@ -180,22 +182,32 @@ interface FileAgg {
   toolCalls: Map<string, number>;
   failed: Map<string, number>;
   thinkingChanges: number;
+  levels: Map<string, number>;
+  loops: number;
+  deadRefs: Map<string, number>;
+  readGuardBlocks: number;
   mcpCalls: { server: string; ts: number; calls: number }[];
   cwd: string | undefined;
 }
 
 function aggregateFile(file: string): FileAgg {
-  const agg: FileAgg = { toolCalls: new Map(), failed: new Map(), thinkingChanges: 0, mcpCalls: [], cwd: undefined };
+  const agg: FileAgg = { toolCalls: new Map(), failed: new Map(), thinkingChanges: 0, levels: new Map(), loops: 0, deadRefs: new Map(), readGuardBlocks: 0, mcpCalls: [], cwd: undefined };
   const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
   eachLine(file, (rec) => {
     if (rec.type === "session" && typeof rec.cwd === "string" && !agg.cwd) agg.cwd = rec.cwd;
-    else if (rec.type === "thinking_level_change") agg.thinkingChanges++;
-    else if (rec.type === "message" && rec.message?.role === "assistant") {
+    else if (rec.type === "thinking_level_change") {
+      agg.thinkingChanges++;
+      if (typeof rec.thinkingLevel === "string") bump(agg.levels, rec.thinkingLevel);
+    } else if (rec.type === "message" && rec.message?.role === "assistant") {
       for (const block of rec.message.content ?? []) {
         if (block?.type === "toolCall" && typeof block.name === "string") bump(agg.toolCalls, block.name);
       }
     } else if (rec.type === "message" && rec.message?.role === "toolResult" && rec.message.isError === true) {
       if (typeof rec.message.toolName === "string") bump(agg.failed, rec.message.toolName);
+      const errText = rec.message.content?.find((b) => b?.type === "text")?.text?.slice(0, 300) ?? "";
+      if (/LOOP DETECTED|has been blocked/i.test(errText)) agg.loops++;
+      else if (/not found|unknown tool|No such tool/i.test(errText) && typeof rec.message.toolName === "string") bump(agg.deadRefs, rec.message.toolName);
+      else if (/RETRYABLE|without read|modified since read|must begin with \[PATH#/i.test(errText)) agg.readGuardBlocks++;
     }
   });
   const ts = fileTimestampMs(file);
@@ -222,12 +234,18 @@ interface WorkspaceStats {
   toolCalls: Record<string, number>;
   failedTools: Record<string, number>;
   thinkingChanges: number;
+  loops: number;
+  deadRefs: Record<string, number>;
+  readGuardBlocks: number;
+  levels: Record<string, number>;
 }
 
 interface Report {
   fingerprint: Fingerprint;
   workspaces: Record<string, WorkspaceStats>;
   mcpUsage: Record<string, { calls: number; lastSeen: string | null }>;
+  /** ISO timestamps of the oldest/newest transcript actually aggregated. */
+  covered: { from: string | null; to: string | null };
 }
 
 function pluginsFromLock(): Record<string, PluginLockEntry> {
@@ -245,7 +263,8 @@ function pluginsFromLock(): Record<string, PluginLockEntry> {
 }
 
 function buildReport(days: number): { report: Report; reportPath: string } {
-  const cutoff = Date.now() - days * 86_400_000;
+  // days <= 0 or Infinity → no cutoff: full on-disk history (default).
+  const cutoff = days > 0 && Number.isFinite(days) ? Date.now() - days * 86_400_000 : 0;
   const workspaces: Record<string, WorkspaceStats> = {};
   const mcpUsage: Report["mcpUsage"] = {};
   let wsDirs: string[] = [];
@@ -261,12 +280,20 @@ function buildReport(days: number): { report: Report; reportPath: string } {
     if (allFiles.length === 0) continue;
     const toolCalls: Record<string, number> = {};
     const failedTools: Record<string, number> = {};
+    const levels: Record<string, number> = {};
+    const deadRefs: Record<string, number> = {};
     let thinkingChanges = 0;
+    let loops = 0;
+    let readGuardBlocks = 0;
     for (const f of allFiles) {
       const agg = aggregateFile(f);
       for (const [k, n] of agg.toolCalls) toolCalls[k] = (toolCalls[k] ?? 0) + n;
       for (const [k, n] of agg.failed) failedTools[k] = (failedTools[k] ?? 0) + n;
       thinkingChanges += agg.thinkingChanges;
+      loops += agg.loops;
+      readGuardBlocks += agg.readGuardBlocks;
+      for (const [k, n] of agg.levels) levels[k] = (levels[k] ?? 0) + n;
+      for (const [k, n] of agg.deadRefs) deadRefs[k] = (deadRefs[k] ?? 0) + n;
       for (const { server, ts, calls } of agg.mcpCalls) {
         if (!mcpUsage[server]) mcpUsage[server] = { calls: 0, lastSeen: null };
         const u = mcpUsage[server];
@@ -275,12 +302,20 @@ function buildReport(days: number): { report: Report; reportPath: string } {
         if (!u.lastSeen || iso > u.lastSeen) u.lastSeen = iso;
       }
     }
-    workspaces[ws] = { sessions: mainFiles.length, toolCalls, failedTools, thinkingChanges };
+    workspaces[ws] = { sessions: mainFiles.length, toolCalls, failedTools, thinkingChanges, loops, deadRefs, readGuardBlocks, levels };
   }
+  // Covered span: min/max transcript timestamp over every aggregated file.
+  const allTs = Object.keys(workspaces).length
+    ? walkJsonl(SESSIONS_DIR, true).filter((f) => fs.statSync(f).mtimeMs >= cutoff).map(fileTimestampMs)
+    : [];
+  const covered = allTs.length
+    ? { from: new Date(Math.min(...allTs)).toISOString(), to: new Date(Math.max(...allTs)).toISOString() }
+    : { from: null, to: null };
   const report: Report = {
     fingerprint: { ompVersion: ompVersion(), host: os.hostname(), plugins: pluginsFromLock(), date: today() },
     workspaces,
     mcpUsage,
+    covered,
   };
   fs.mkdirSync(HARNESS_DIR, { recursive: true });
   const reportPath = path.join(HARNESS_DIR, `report-${today()}.json`);
@@ -293,7 +328,15 @@ function summarize(report: Report, reportPath: string): string {
     (s, w) => s + Object.values(w.toolCalls).reduce((a, b) => a + b, 0), 0);
   const wsCount = Object.keys(report.workspaces).length;
   const servers = Object.keys(report.mcpUsage).length;
-  return `Harness report: ${wsCount} workspace(s), ${totalCalls} tool calls in window, ${servers} MCP server(s) seen. Written to ${reportPath}`;
+  const span = coveredLine(report);
+  return `Harness report: ${wsCount} workspace(s), ${totalCalls} tool calls in window, ${servers} MCP server(s) seen. ${span} Written to ${reportPath}`;
+}
+
+/** `Covered <from> → <to> (N day(s))` for the report summary / findings doc. */
+function coveredLine(report: Report): string {
+  if (!report.covered.from || !report.covered.to) return "Covered: no sessions";
+  const days = Math.max(1, Math.round((Date.parse(report.covered.to) - Date.parse(report.covered.from)) / 86_400_000) || 1);
+  return `Covered ${report.covered.from.slice(0, 10)} → ${report.covered.to.slice(0, 10)} (${days} day(s))`;
 }
 
 // ── Ledger (shared by tool + /rsi-intake) ──────────────────────────────────
@@ -381,6 +424,7 @@ function buildFindingsMd(report: Report): string {
     `- host: ${f.host}`,
     `- date: ${f.date}`,
     `- plugins: ${plugins}`,
+    `- covered: ${coveredLine(report)}`,
     "",
     "## Telemetry",
     "| workspace | sessions | tool calls | failed | thinking changes |",
@@ -401,10 +445,38 @@ function buildFindingsMd(report: Report): string {
     const stale = u.lastSeen === null || Date.parse(u.lastSeen) < staleCutoff;
     lines.push(`| ${server} | ${u.calls} | ${u.lastSeen ?? "never"} | ${stale ? "YES" : ""} |`);
   }
+  // Auto-derived findings: counted signals from the aggregated transcripts.
+  const totals = { thinking: 0, loops: 0, readGuard: 0, edits: 0 };
+  const levels: Record<string, number> = {};
+  const deadRefs: Record<string, number> = {};
+  for (const w of Object.values(report.workspaces)) {
+    totals.thinking += w.thinkingChanges;
+    totals.loops += w.loops;
+    totals.readGuard += w.readGuardBlocks;
+    totals.edits += w.toolCalls["edit"] ?? 0;
+    for (const [k, n] of Object.entries(w.levels)) levels[k] = (levels[k] ?? 0) + n;
+    for (const [k, n] of Object.entries(w.deadRefs)) deadRefs[k] = (deadRefs[k] ?? 0) + n;
+  }
+  const findings: string[] = [];
+  if (totals.thinking > 0) {
+    const parts = Object.entries(levels).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ×${n}`).join(", ");
+    findings.push(`- thinking_level_change: ${totals.thinking} events${parts ? ` (${parts})` : ""} — check defaultThinkingLevel vs autoThinking override`);
+  }
+  if (totals.loops > 0) findings.push(`- loop-police detections: ${totals.loops} blocked tool calls (TOOL CALL LOOP / LOOP DETECTED)`);
+  if (Object.keys(deadRefs).length) {
+    const parts = Object.entries(deadRefs).sort((a, b) => b[1] - a[1]).map(([k, n]) => `\`${k}\` ×${n}`).join(", ");
+    findings.push(`- dead-reference failures: ${parts} — tool referenced but not installed`);
+  }
+  if (totals.readGuard > 0) {
+    const pct = totals.edits > 0 ? ` (${Math.round((totals.readGuard / totals.edits) * 100)}% of edits)` : "";
+    findings.push(`- read-before-edit guard friction: ${totals.readGuard} blocked or stale edits${pct}`);
+  }
   lines.push(
     "",
     "## Findings",
-    "_Add counted observations here (dead references, loops, config mismatches, failed-tool spikes). One bullet per finding, each citing a number from Telemetry above._",
+    ...(findings.length
+      ? [...findings, "_Add further counted observations here (config mismatches, failed-tool spikes). One bullet per finding, each citing a number from Telemetry above._"]
+      : ["_Add counted observations here (dead references, loops, config mismatches, failed-tool spikes). One bullet per finding, each citing a number from Telemetry above._"]),
     "",
     "## Proposals [upstream]",
     "_One line per proposal, format `target: gist`, where target is a file under `build/` in denisekart/omp-devcontainer-base. Keep gists stable — the base-repo ledger dedups on target+gist._",
@@ -446,6 +518,33 @@ function parseFindings(text: string): { date: string | null; proposals: Proposal
   return { date, proposals };
 }
 
+/**
+ * Body lines of a `^## <heading>$` section (up to the next `^## ` heading or
+ * the closing `Intake:` line — same scan rules as parseFindings), or null when
+ * the heading is absent.
+ */
+function sectionBody(text: string, heading: string): string[] | null {
+  const lines = text.split("\n");
+  const start = lines.findIndex((l) => l.trim() === `## ${heading}`);
+  if (start < 0) return null;
+  const body: string[] = [];
+  for (const l of lines.slice(start + 1)) {
+    if (/^## /.test(l) || /^Intake:/.test(l)) break;
+    body.push(l);
+  }
+  return body;
+}
+
+/** Replace a `## <heading>` section's body in `md` with `body`; returns md unchanged when the heading is absent. */
+function setSectionBody(md: string, heading: string, body: string[]): string {
+  const lines = md.split("\n");
+  const start = lines.findIndex((l) => l.trim() === `## ${heading}`);
+  if (start < 0) return md;
+  let end = start + 1;
+  while (end < lines.length && !/^## /.test(lines[end]) && !/^Intake:/.test(lines[end])) end++;
+  return [...lines.slice(0, start + 1), ...body, ...lines.slice(end)].join("\n");
+}
+
 /** Last committer date of `target` (cwd-relative); null if git has no record. */
 function targetLastChanged(target: string): string | null {
   try {
@@ -472,10 +571,25 @@ async function handleExport(args: string, ctx: ExtensionCommandContext): Promise
   };
   try {
     const parsed = parseInt(args.trim(), 10);
-    const days = parsed > 0 ? parsed : 7;
+    const days = parsed > 0 ? parsed : Infinity;
     const { report, reportPath } = buildReport(days);
     const mdPath = path.join(HARNESS_DIR, `findings-${today()}.md`);
-    const md = buildFindingsMd(report);
+    let md = buildFindingsMd(report);
+    // Merge, don't clobber: preserve human-filled Findings/Proposals bodies
+    // written earlier today; telemetry, fingerprint, and covered span refresh.
+    try {
+      const old = fs.readFileSync(mdPath, "utf8");
+      for (const heading of ["Findings", "Proposals [upstream]"]) {
+        const oldBody = sectionBody(old, heading);
+        const freshBody = sectionBody(md, heading) ?? [];
+        const placeholder = (freshBody.find((l) => l.trim()) ?? "").trim();
+        if (oldBody?.some((l) => l.trim() && l.trim() !== placeholder)) {
+          md = setSectionBody(md, heading, oldBody);
+        }
+      }
+    } catch {
+      /* no prior file for today → fresh document */
+    }
     fs.writeFileSync(mdPath, md);
     notify(`Wrote ${mdPath} (report: ${reportPath}).\n\n${EXPORT_BEGIN}\n${md}${EXPORT_END}`, "info");
   } catch (err) {
@@ -570,15 +684,15 @@ export default function (pi: ExtensionAPI): void {
     name: "harness_report",
     label: "Harness Report",
     description:
-      "Aggregate recent omp session transcripts (~/.omp/agent/sessions) into a fingerprinted telemetry report: per-workspace session/tool-call/failure counts, MCP server usage, and an environment fingerprint. Writes ~/.omp/harness/report-<date>.json. days defaults to 7.",
+      "Aggregate omp session transcripts (~/.omp/agent/sessions) into a fingerprinted telemetry report: per-workspace session/tool-call/failure counts, MCP server usage, and an environment fingerprint. Writes ~/.omp/harness/report-<date>.json. The window defaults to ALL on-disk history; the result reports the covered span.",
     parameters: {
       type: "object",
-      properties: { days: { type: "number", description: "Lookback window in days (default 7)" } },
+      properties: { days: { type: "number", description: "Lookback window in days (default: all on-disk history; the result reports the covered span)" } },
       additionalProperties: false,
     },
     approval: "read",
     async execute(_toolCallId: string, params: ReportParams): Promise<AgentToolResult<Report>> {
-      const days = typeof params?.days === "number" && params.days > 0 ? params.days : 7;
+      const days = typeof params?.days === "number" && params.days > 0 ? params.days : Infinity;
       const { report, reportPath } = buildReport(days);
       return { content: [{ type: "text", text: summarize(report, reportPath) }], details: report };
     },
@@ -629,7 +743,7 @@ export default function (pi: ExtensionAPI): void {
 
   try {
     pi.registerCommand("rsi-export", {
-      description: "Print a pasteable harness findings skeleton (default window: 7 days)",
+      description: "Print harness findings with auto-derived telemetry findings (default window: full history)",
       handler: handleExport,
     });
     pi.registerCommand("rsi-intake", {
