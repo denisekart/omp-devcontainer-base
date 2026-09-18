@@ -55,10 +55,10 @@ hindsight:
 # Global plugins (pi-loop-police, pi-lens, context-mode, pi-simplify) are installed via install-omp-plugins.sh (omp plugin install)
 extensions: []
 
-# Plan/draft/spec locations are NOT configurable here: the built-in plan-mode writes
+# Plan/draft/spec artifact locations are NOT configurable here: the built-in plan-mode writes
 # session-scoped artifacts, and there is no plan-artifact-dir config key in omp.
 # Plan files written under .omp/plans/ are a project convention (AGENTS.md). Do not
-# re-add a `plan:` block.
+# re-add a plan-artifact-dir key (plan.autosave below is a real settings key — keep it).
 
 # Advisor (passive reviewer): second model (qwen3.6 worker) reviews the
 # primary transcript and can inject advice. OFF by default; knobs:
@@ -132,9 +132,9 @@ steeringMode: all
 interruptMode: wait
 error:
   notify: "on"
-hideThinkingBlock: true
+# false is omp's built-in default; the key is intentionally absent (see note above).
 statusLine:
-  preset: full
+  preset: nerd
   separator: pipe
   compactThinkingLevel: false
 display:
@@ -144,17 +144,22 @@ features:
   unexpectedStopDetection: smart
 compaction:
   methodOrder:
+    - snapcompact
     - handoff
     - soft
-    - shake
-    - snapcompact
     - remote
+    - shake
   handoffSaveToDisk: true
 autolearn:
   enabled: true
   autoContinue: true
 astGrep:
   enabled: true
+proseOnlyThinking: false
+composer:
+  tokenRate: true
+plan:
+  autosave: true
 commands:
   enableClaudeProject: false
   enableOpencodeProject: false
